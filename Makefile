@@ -3,7 +3,7 @@ CFLAGS = -Wall -Wextra -O2 -std=c11 -D_DEFAULT_SOURCE \
          -I. -Iconfig -Icore -Itransport -Istate
 LDFLAGS = -lpthread
 
-SRC_CORE = core/doip_frame.c core/doip_api.c core/doip_log.c
+SRC_CORE = core/doip_frame.c core/doip_api.c core/doip_log.c core/doip_det.c
 SRC_UDP  = transport/doip_udp.c
 SRC_TCP  = transport/doip_tcp.c
 SRC_UDS  = transport/doip_uds.c

@@ -31,8 +31,9 @@
 #define DOIP_EID_LENGTH             6U
 
 /* ===== ECU Logical Addresses (Configurable) ===== */
-#define DOIP_ECU_LOGICAL_ADDRESS    0x0E00U     /* Default DoIP address */
-#define DOIP_OBD_LOGICAL_ADDRESS    0x1340U     /* OBD port */
+/* Valid ECU Ranges: 0x0001-0x0DFF, 0x1000-0x7FFF, 0x8000-0xDFFF */
+#define DOIP_ECU_LOGICAL_ADDRESS    0x1003U     /* Changed from 0x0E00 */
+#define DOIP_OBD_LOGICAL_ADDRESS    0x1340U
 
 /* ===== Network Configuration ===== */
 #define DOIP_UDP_PORT               13400U
@@ -58,5 +59,12 @@ typedef void (*DoIP_TxConfirmation)(bool success);
 
 extern DoIP_RxIndication g_doip_rx_cb;
 extern DoIP_TxConfirmation g_doip_tx_cb;
+
+/* ===== API Declaration ===== */
+/**
+ * @brief Validate configuration parameters against ISO 13400-2 constraints
+ * @return 0 on success, -1 on validation failure
+ */
+int DoIP_Config_Validate(void);
 
 #endif /* DOIP_CONFIG_H */

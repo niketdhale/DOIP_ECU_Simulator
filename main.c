@@ -4,6 +4,8 @@
 #include <unistd.h>
 #include <string.h>
 #include "core/doip_log.h"
+#include "core/doip_det.h"
+#include "config/doip_config.h"
 #include "state/doip_fsm.h"
 
 static volatile int g_running = 1;
@@ -12,10 +14,11 @@ static void sigint_handler(int sig) { (void)sig; g_running = 0; }
 int main(int argc, char *argv[]) {
     signal(SIGINT, sigint_handler);
     
+    /* Initialize Logging First (so we can log config errors) */
     DoIP_LogLevel_t log_level = DOIP_LOG_LEVEL_INFO;
     DoIP_LogModule_t log_modules = DOIP_LOG_MODULE_ALL;
     const char *log_file = NULL;
-    uint32_t s3_timeout = 5000; /* Default 5s S3 */
+    uint32_t s3_timeout = 5000;
     
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-v") == 0) log_level = DOIP_LOG_LEVEL_VERBOSE;
@@ -33,10 +36,18 @@ int main(int argc, char *argv[]) {
     }
     
     LOG_CORE("=== DoIP ECU Simulator Starting ===");
+
+    /* 1. Validate Configuration (AUTOSAR Compliance) */
+    if (DoIP_Config_Validate() != 0) {
+        LOG_ERROR(DOIP_LOG_MODULE_CORE, "❌ Configuration validation failed. Exiting.");
+        DoIP_Log_DeInit();
+        return EXIT_FAILURE;
+    }
+
     LOG_CORE("Log level: %d, Modules: 0x%02X, S3: %u ms", log_level, log_modules, s3_timeout);
     if (log_file) LOG_CORE("Logging to file: %s", log_file);
 
-    /* Initialize FSM (handles transports internally) */
+    /* 2. Initialize FSM */
     if (DoIP_Fsm_Init(s3_timeout) != 0) {
         DOIP_LOG_ERROR(DOIP_LOG_MODULE_CORE, "FSM initialization failed");
         DoIP_Log_DeInit();
@@ -45,10 +56,10 @@ int main(int argc, char *argv[]) {
 
     LOG_CORE("System ready. Press Ctrl+C to exit.");
 
-    /* AUTOSAR-style cyclic scheduler */
+    /* 3. Main Loop */
     while (g_running) {
         DoIP_Fsm_MainFunction();
-        usleep(1000); /* 1ms yield */
+        usleep(1000);
     }
 
     LOG_CORE("Shutting down...");
