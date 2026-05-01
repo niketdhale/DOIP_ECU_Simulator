@@ -1,5 +1,6 @@
 #include "transport/doip_uds.h"
 #include "core/doip_log.h"
+#include "state/doip_fsm.h"
 #include <string.h>
 #include <stdio.h>
 #include <time.h>
@@ -50,6 +51,7 @@ static int handle_session_control(const uint8_t *req, uint16_t req_len,
     *res_len = 6;
 
     LOG_INFO(DOIP_LOG_MODULE_UDS, "✅ Session changed to: 0x%02X", session_type);
+    DoIP_Fsm_OnUdsSessionChange(session_type); /* Hook FSM */
     return 0;
 }
 
@@ -103,6 +105,7 @@ static int handle_tester_present(const uint8_t *req, uint16_t req_len,
     }
     res[0] = UDS_SID_TESTER_PRESENT_RES; res[1] = req[1]; *res_len = 2;
     doip_uds_update_activity();
+    DoIP_Fsm_OnDiagnosticActivity(); /* Refresh S3 on tester present */
     return 0;
 }
 

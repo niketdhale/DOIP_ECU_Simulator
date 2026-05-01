@@ -2,6 +2,7 @@
 #include "transport/doip_uds.h"
 #include "core/doip_frame.h"
 #include "core/doip_log.h"
+#include "state/doip_fsm.h"
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -69,6 +70,7 @@ int doip_tcp_poll(DoIP_RxIndication rx_cb) {
 
     doip_header_t hdr;
     if (doip_deserialize_header(rx_buf, n, &hdr) < 0) {
+        DoIP_Fsm_OnMalformedPacket(); /* Negative scenario tracking */
         LOG_WARN(DOIP_LOG_MODULE_TCP, "Invalid header"); goto close_client;
     }
     g_client.last_activity_ms = get_time_ms();
@@ -123,6 +125,7 @@ int doip_tcp_poll(DoIP_RxIndication rx_cb) {
             if (resp_code == DOIP_ACT_SUCCESS) {
                 g_client.state = DOIP_TCP_STATE_ACTIVATED;
                 g_client.tester_logical_addr = tester_addr;
+                DoIP_Fsm_OnRoutingActivation(true); /* Hook FSM */
                 LOG_INFO(DOIP_LOG_MODULE_TCP, "✅ Routing Activated.");
             } else {
                 LOG_WARN(DOIP_LOG_MODULE_TCP, "Routing Act Rejected: Code 0x%02X", resp_code);
@@ -139,11 +142,12 @@ int doip_tcp_poll(DoIP_RxIndication rx_cb) {
             uint16_t uds_req_len = hdr.payload_length - 4;
             
             LOG_DEBUG(DOIP_LOG_MODULE_TCP, "Diagnostic Req: Tester=0x%04X, ECU=0x%04X, UDS_Len=%u", tester_addr, ecu_addr, uds_req_len);
+            DoIP_Fsm_OnDiagnosticActivity(); /* Refresh S3 timer */
             
             uint8_t uds_response[DOIP_MAX_PAYLOAD_SIZE];
             uint16_t uds_res_len = 0;
             
-            int ret = doip_uds_process_request(uds_req, uds_req_len, uds_response, &uds_res_len);
+            (void)doip_uds_process_request(uds_req, uds_req_len, uds_response, &uds_res_len);
             
             if (uds_res_len > 0) {
                 /* Step 1: Send ACK */
@@ -180,6 +184,7 @@ int doip_tcp_poll(DoIP_RxIndication rx_cb) {
     return 0;
 
 close_client:
+    DoIP_Fsm_OnTcpDisconnect(); /* Notify FSM */
     LOG_INFO(DOIP_LOG_MODULE_TCP, "Client disconnected");
     close(g_client.fd); g_client.fd = -1; g_client.state = DOIP_TCP_STATE_IDLE;
     return 0;
