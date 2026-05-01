@@ -1,0 +1,35 @@
+# Build artifacts
+*.o
+*.a
+*.so
+*.dylib
+doip_ecu_sim
+doip_discovery_test
+build/
+out/
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+*~
+*.bak
+
+# Core dumps & debugging
+core
+*.core
+gdb_history
+
+# Compilation database
+compile_commands.json
+
+# Coverage/Analysis (if you add later)
+*.gcno
+*.gcda
+coverage/
+htmlcov/
