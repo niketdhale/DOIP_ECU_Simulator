@@ -137,13 +137,13 @@ test-lib: lib $(LIB_TEST_SERVER) $(LIB_TEST_CLIENT) $(LIB_TEST_EXAMPLE)
 	@echo "Minimal API example:"
 	@echo "  LD_LIBRARY_PATH=. ./$(LIB_TEST_EXAMPLE) 127.0.0.1"
 
-$(LIB_TEST_SERVER): main.c libdoip.so
+$(LIB_TEST_SERVER): main.c $(SHARED_LIB)
 	$(CC) $(CFLAGS) $< -L. -ldoip $(LDFLAGS) -o $@
 
-$(LIB_TEST_CLIENT): client/main_client.c libdoip.so
+$(LIB_TEST_CLIENT): client/main_client.c $(SHARED_LIB)
 	$(CC) $(CFLAGS) $< -L. -ldoip $(LDFLAGS) -o $@
 
-$(LIB_TEST_EXAMPLE): example/consumer.c libdoip.so
+$(LIB_TEST_EXAMPLE): example/consumer.c $(SHARED_LIB)
 	$(CC) $(CFLAGS) $< -L. -ldoip $(LDFLAGS) -o $@
 
 # =====================================================================
