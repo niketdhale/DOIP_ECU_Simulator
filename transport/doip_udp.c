@@ -80,7 +80,7 @@ int doip_udp_poll(DoIP_RxIndication rx_cb) {
         LOG_DEBUG(DOIP_LOG_MODULE_UDP, "Handling VIN/EID Request");
         doip_vehicle_announce_t resp = {0};
         memcpy(resp.vin, "WBAXXXXXXXXXXXXXX", DOIP_VIN_LENGTH);
-        /* ✅ FIXED: Use config macro instead of hardcoded 0x0E00 */
+        /* Use config macro instead of hardcoded 0x0E00 */
         resp.logical_address = htons(DOIP_ECU_LOGICAL_ADDRESS);
         memset(resp.eid, 0xAA, DOIP_EID_LENGTH);
         memset(resp.gid, 0xBB, DOIP_GID_LENGTH);
@@ -91,7 +91,7 @@ int doip_udp_poll(DoIP_RxIndication rx_cb) {
     return 0;
 }
 
-/* ✅ NEW: Tick function with Counter Logic */
+/* Tick function with Counter Logic */
 void doip_udp_tick(uint32_t now_ms) {
     /* 1. Check Compile-time toggle (Disable completely if false) */
     if (!DOIP_ENABLE_PERIODIC_ANNOUNCE) return;
@@ -116,7 +116,7 @@ void doip_udp_tick(uint32_t now_ms) {
     ann.vin_sync_status = htons(0x0010);
 
     if (udp_send_payload(DOIP_PT_VEHICLE_ANNOUNCE, &ann, sizeof(ann)) == 0) {
-        LOG_INFO(DOIP_LOG_MODULE_UDP, "📡 Vehicle Announcement %u/%u sent", g_announcement_count, DOIP_ANNOUNCE_COUNT_MAX);
+        LOG_INFO(DOIP_LOG_MODULE_UDP, "Vehicle Announcement %u/%u sent", g_announcement_count, DOIP_ANNOUNCE_COUNT_MAX);
     }
 }
 

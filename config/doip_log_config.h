@@ -19,10 +19,10 @@
 #define DOIP_LOG_LEVEL_DEBUG    3
 #define DOIP_LOG_LEVEL_VERBOSE  4
 
-/* 🔧 CONFIGURABLE: Set default compile-time log level */
+/* CONFIGURABLE: Set default compile-time log level */
 #define DOIP_LOG_DEFAULT_LEVEL  DOIP_LOG_LEVEL_INFO
 
-/* 🔧 CONFIGURABLE: Enable/disable features */
+/* CONFIGURABLE: Enable/disable features */
 #define DOIP_LOG_ENABLE_COLORS      true
 #define DOIP_LOG_ENABLE_TIMESTAMPS  true
 #define DOIP_LOG_ENABLE_SOURCE_LOC  true
@@ -39,7 +39,7 @@ typedef enum {
     DOIP_LOG_MODULE_ALL    = 0xFF
 } DoIP_LogModule_t;
 
-/* 🔧 CONFIGURABLE: Enable modules at compile-time */
+/* CONFIGURABLE: Enable modules at compile-time */
 #define DOIP_LOG_ENABLED_MODULES  DOIP_LOG_MODULE_ALL
 
 #endif /* DOIP_LOG_CONFIG_H */

@@ -19,7 +19,7 @@
 #define DOIP_VERSION_2012   0  /* ISO 13400-2:2012 (16-bit addresses) */
 #define DOIP_VERSION_2019   1  /* ISO 13400-2:2019 (32-bit addresses) */
 
-/* 🔧 CONFIGURABLE: Set your DoIP version here */
+/* CONFIGURABLE: Set your DoIP version here */
 #define DOIP_PROTOCOL_VERSION_SELECTED  DOIP_VERSION_2012
 
 /* ===== Protocol Version Constants ===== */

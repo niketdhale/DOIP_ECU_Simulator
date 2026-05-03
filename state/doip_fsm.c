@@ -109,7 +109,7 @@ void DoIP_Fsm_MainFunction(void) {
         uint32_t now = get_time_ms();
         if ((now - g_fsm_ctx.state_entry_time_ms) > g_fsm_ctx.s3_server_timeout_ms) {
             g_fsm_ctx.timeout_violation_count++;
-            LOG_WARN(DOIP_LOG_MODULE_FSM, "️ S3 Server timeout expired (Violations: %u)", 
+            LOG_WARN(DOIP_LOG_MODULE_FSM, "S3 Server timeout expired (Violations: %u)",
                      g_fsm_ctx.timeout_violation_count);
             
             /* Force reset to default session per ISO 14229-1 */

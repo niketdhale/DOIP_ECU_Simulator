@@ -94,7 +94,7 @@ static int process_client_frame(doip_client_t *client) {
             if (resp_code == DOIP_ACT_SUCCESS) {
                 client->state = DOIP_TCP_STATE_ACTIVATED;
                 client->tester_logical_addr = tester_addr;
-                LOG_INFO(DOIP_LOG_MODULE_TCP, "✅ Routing Activated for client fd=%d", client->fd);
+                LOG_INFO(DOIP_LOG_MODULE_TCP, "Routing Activated for client fd=%d", client->fd);
             }
             break;
         }
@@ -109,7 +109,7 @@ static int process_client_frame(doip_client_t *client) {
             uint8_t uds_response[DOIP_MAX_PAYLOAD_SIZE];
             uint16_t uds_res_len = 0;
             
-            /* ✅ Pass per-client UDS context */
+            /* Pass per-client UDS context */
             (void)doip_uds_process_request(&client->uds_ctx, uds_req, uds_req_len, uds_response, &uds_res_len);
             
             if (uds_res_len > 0) {

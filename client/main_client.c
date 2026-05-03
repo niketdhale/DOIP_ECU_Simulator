@@ -19,7 +19,7 @@ static void print_hex(const char *label, const uint8_t *buf, uint16_t len) {
 
 static int check(const char *step, DoIP_ClientStatus_t rc) {
     if (rc != DOIP_CLIENT_OK) {
-        printf("[CLIENT] ❌ %s failed (rc=%d)\n", step, rc);
+        printf("[CLIENT] FAIL: %s (rc=%d)\n", step, rc);
         return 0;
     }
     return 1;
@@ -100,8 +100,8 @@ int main(int argc, char *argv[]) {
         if (check("SessionControl", rc)) {
             print_hex("SessionControl rsp", resp, resp_len);
             if (resp_len > 0 && resp[0] == UDS_SID_SESSION_CONTROL_RES)
-                printf("[CLIENT] ✅ Extended session active\n");
-            else { printf("[CLIENT] ❌ Unexpected session response\n"); all_ok = 0; }
+                printf("[CLIENT] OK: Extended session active\n");
+            else { printf("[CLIENT] FAIL: Unexpected session response\n"); all_ok = 0; }
         } else all_ok = 0;
     }
 
@@ -117,8 +117,8 @@ int main(int argc, char *argv[]) {
         if (check("ReadVIN", rc)) {
             print_hex("ReadVIN rsp", resp, resp_len);
             if (resp_len > 3 && resp[0] == UDS_SID_READ_DATA_BY_ID_RES)
-                printf("[CLIENT] ✅ VIN: %.17s\n", &resp[3]);
-            else { printf("[CLIENT] ❌ Unexpected VIN response\n"); all_ok = 0; }
+                printf("[CLIENT] OK: VIN: %.17s\n", &resp[3]);
+            else { printf("[CLIENT] FAIL: Unexpected VIN response\n"); all_ok = 0; }
         } else all_ok = 0;
     }
 
@@ -133,7 +133,7 @@ int main(int argc, char *argv[]) {
             req, sizeof(req), resp, sizeof(resp), &resp_len);
         if (check("ReadSwVersion", rc)) {
             print_hex("ReadSwVersion rsp", resp, resp_len);
-            printf("[CLIENT] ✅ SW Version read OK\n");
+            printf("[CLIENT] OK: SW Version read\n");
         } else all_ok = 0;
     }
 
@@ -147,8 +147,8 @@ int main(int argc, char *argv[]) {
         if (check("TesterPresent", rc)) {
             print_hex("TesterPresent rsp", resp, resp_len);
             if (resp_len > 0 && resp[0] == UDS_SID_TESTER_PRESENT_RES)
-                printf("[CLIENT] ✅ Tester Present OK\n");
-            else { printf("[CLIENT] ❌ Unexpected TesterPresent response\n"); all_ok = 0; }
+                printf("[CLIENT] OK: Tester Present\n");
+            else { printf("[CLIENT] FAIL: Unexpected TesterPresent response\n"); all_ok = 0; }
         } else all_ok = 0;
     }
 
@@ -161,7 +161,7 @@ int main(int argc, char *argv[]) {
             req, sizeof(req), resp, sizeof(resp), &resp_len);
         if (check("ECUReset", rc)) {
             print_hex("ECUReset rsp", resp, resp_len);
-            printf("[CLIENT] ✅ ECU Reset sent OK\n");
+            printf("[CLIENT] OK: ECU Reset sent\n");
         } else all_ok = 0;
     }
 
@@ -169,6 +169,6 @@ int main(int argc, char *argv[]) {
     DoIP_Client_Disconnect(client);
     DoIP_Client_Destroy(client);
 
-    printf("\n[CLIENT] Test %s\n", all_ok ? "PASSED ✅" : "FAILED ❌");
+    printf("\n[CLIENT] Test %s\n", all_ok ? "PASSED" : "FAILED");
     return all_ok ? EXIT_SUCCESS : EXIT_FAILURE;
 }

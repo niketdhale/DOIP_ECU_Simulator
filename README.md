@@ -193,22 +193,22 @@ Expected output:
 [CLIENT] Connecting to 127.0.0.1:13400...
 [CLIENT] TCP connection established
 [CLIENT] Routing activated (code=0x10)
-[CLIENT] ✅ Extended session active
-[CLIENT] ✅ VIN: WBAXXXXXXXXXXXXXX
-[CLIENT] ✅ SW Version read OK
-[CLIENT] ✅ Tester Present OK
-[CLIENT] ✅ ECU Reset sent OK
-[CLIENT] Test PASSED ✅
+[CLIENT] OK: Extended session active
+[CLIENT] OK: VIN: WBAXXXXXXXXXXXXXX
+[CLIENT] OK: SW Version read
+[CLIENT] OK: Tester Present
+[CLIENT] OK: ECU Reset sent
+[CLIENT] Test PASSED
 ```
 
 ### Terminal 2 — Python Integration Tests
 
 ```bash
 # Single client: routing activation + UDS transactions
-python3 test_routing_act.py
+python3 test/test_routing_act.py
 
 # 3 concurrent clients
-python3 test_multi_client.py
+python3 test/test_multi_client.py
 ```
 
 ---
@@ -333,6 +333,100 @@ All configuration is in the `config/` headers — no runtime config files needed
 #define DOIP_RX_TIMEOUT_MS              2000U
 #define DOIP_ROUTING_ACTIVATION_TIMEOUT_MS  5000U
 ```
+
+---
+
+## Configuring UDS Request / Response
+
+UDS behaviour in the simulator is controlled at three levels:
+
+### 1. Enable / disable services — `config/doip_uds_config.h`
+
+Each UDS service can be compiled in or out with a toggle macro:
+
+```c
+#define UDS_SUPPORT_SESSION_CONTROL   1   /* 0x10 — set to 0 to disable */
+#define UDS_SUPPORT_READ_DATA         1   /* 0x22 */
+#define UDS_SUPPORT_WRITE_DATA        0   /* 0x2E — disabled by default */
+#define UDS_SUPPORT_TESTER_PRESENT    1   /* 0x3E */
+#define UDS_SUPPORT_ECU_RESET         1   /* 0x11 */
+#define UDS_SUPPORT_ROUTINE_CONTROL   1   /* 0x31 */
+```
+
+The list of SIDs that the server claims to support (sent back in NRC responses) is controlled by:
+
+```c
+#define UDS_SUPPORTED_SIDS  \
+    UDS_SID_SESSION_CONTROL, UDS_SID_ECU_RESET, \
+    UDS_SID_READ_DATA_BY_ID, UDS_SID_TESTER_PRESENT, \
+    UDS_SID_ROUTINE_CONTROL
+```
+
+If a client sends a SID not in this list the server returns NRC `0x11` (serviceNotSupported).
+
+### 2. Customise response data — `transport/doip_uds.c`
+
+Each service has a dedicated handler function in the dispatch table. Edit the handler to change what data is returned.
+
+**Example — add a new DID to `handle_read_data_by_id`:**
+
+```c
+/* transport/doip_uds.c — inside handle_read_data_by_id() */
+switch (did) {
+    case UDS_DID_VIN_NUMBER:
+        memcpy(&res[3], "MYVIN00000000001", 17);   /* <- change VIN here */
+        *res_len = 20;
+        break;
+
+    case UDS_DID_SOFTWARE_VERSION:
+        memcpy(&res[3], "V2.3.1", 6);              /* <- change SW version */
+        *res_len = 3 + 6;
+        break;
+
+    case 0xF199:                                    /* <- add a new DID */
+        memcpy(&res[3], "2024-12-01", 10);
+        *res_len = 3 + 10;
+        break;
+
+    default:
+        res[0] = 0x7F; res[1] = UDS_SID_READ_DATA_BY_ID;
+        res[2] = UDS_NRC_REQUEST_OUT_OF_RANGE;
+        *res_len = 3;
+        return -1;
+}
+```
+
+Add corresponding DID constant in `config/doip_uds_config.h`:
+
+```c
+#define UDS_DID_PRODUCTION_DATE     0xF199U
+```
+
+### 3. Auto-respond to unhandled services — `UDS_SIMULATOR_AUTO_RESPOND`
+
+When a SID is in the supported list but has no explicit handler, the auto-respond fallback returns a positive response by mirroring the request with `SID | 0x40`:
+
+```c
+/* config/doip_uds_config.h */
+#define UDS_SIMULATOR_AUTO_RESPOND  1   /* 1 = echo positive response; 0 = return NRC */
+```
+
+Set to `0` if you want unsupported sub-functions to return a NRC instead.
+
+### 4. Session and timing parameters
+
+```c
+/* config/doip_uds_config.h */
+#define UDS_S3_SERVER_MS            5000U   /* S3 server session timeout (ms) */
+#define UDS_P2_SERVER_MS            50U     /* P2 response time (ms) */
+
+/* Session type flags */
+#define UDS_ECU_SUPPORTS_DEFAULT      1
+#define UDS_ECU_SUPPORTS_EXTENDED     1
+#define UDS_ECU_SUPPORTS_PROGRAMMING  0     /* set to 1 to allow programming session */
+```
+
+Per-client session state (`UdsClientContext_t`) is maintained automatically by the server — each TCP connection gets its own context tracking the active session, last activity timestamp, and security state.
 
 ---
 
