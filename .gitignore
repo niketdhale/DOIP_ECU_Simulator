@@ -20,8 +20,8 @@ Desktop.ini
 *~
 *.bak
 
-# Core dumps & debugging
-core
+# Core dumps & debugging (Linux crash dump file at repo root, NOT the core/ source dir)
+/core
 *.core
 gdb_history
 

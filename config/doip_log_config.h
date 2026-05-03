@@ -26,6 +26,7 @@ typedef enum {
     DOIP_LOG_MODULE_TCP    = 0x04,
     DOIP_LOG_MODULE_UDS    = 0x08,
     DOIP_LOG_MODULE_FSM    = 0x10,
+    DOIP_LOG_MODULE_CLIENT = 0x20,   /* DoIP Client */
     DOIP_LOG_MODULE_ALL    = 0xFF
 } DoIP_LogModule_t;
 

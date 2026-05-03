@@ -1,5 +1,6 @@
 #include "doip_api.h"
 #include "core/doip_log.h"
+#include "core/doip_api.h"
 #include "state/doip_fsm.h"
 #include "transport/doip_udp.h"
 #include "config/doip_config.h"
@@ -7,6 +8,10 @@
 #include <string.h>
 #include <time.h>
 #include <pthread.h>
+
+/* Satisfy extern declarations in config/doip_config.h and core/doip_api.h */
+DoIP_RxIndication   g_doip_rx_cb = NULL;
+DoIP_TxConfirmation g_doip_tx_cb = NULL;
 
 struct DoIP_Context {
     DoIP_Config_t config;
@@ -104,4 +109,9 @@ void DoIP_SetLogLevel(DoIP_Handle_t *handle, uint8_t level) {
     pthread_mutex_lock(&g_api_mutex);
     if (handle) { handle->config.log_level = level; DoIP_Log_SetLevel(level); }
     pthread_mutex_unlock(&g_api_mutex);
+}
+
+void DoIP_EnablePeriodicAnnounce(DoIP_Handle_t *handle, bool enable) {
+    (void)handle; (void)enable;
+    /* TODO: forward to doip_udp layer when runtime toggle is needed */
 }

@@ -30,11 +30,11 @@
 #define DOIP_GID_LENGTH             6U
 #define DOIP_EID_LENGTH             6U
 
-/* ===== ECU Logical Addresses (Configurable) ===== */
+/* ===== Logical Addresses (Configurable) ===== */
 /* Valid ECU Ranges: 0x0001-0x0DFF, 0x1000-0x7FFF, 0x8000-0xDFFF */
-/* 0x0E00 is reserved for External Tester, so we use 0x1003 */
-#define DOIP_ECU_LOGICAL_ADDRESS    0x1003U     
+#define DOIP_ECU_LOGICAL_ADDRESS    0x1003U
 #define DOIP_OBD_LOGICAL_ADDRESS    0x1340U
+#define DOIP_TESTER_LOGICAL_ADDRESS 0x0E00U     /* ISO 13400-2: reserved for external testers */
 
 /* ===== Network Configuration ===== */
 #define DOIP_UDP_PORT               13400U
