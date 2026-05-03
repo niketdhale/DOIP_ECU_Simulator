@@ -20,4 +20,10 @@ void doip_udp_handle_request(uint16_t ptype, const uint8_t *data, uint32_t len);
 /* Cleanup UDP resources */
 void doip_udp_deinit(void);
 
+/**
+ * @brief Non-blocking tick for periodic Vehicle Announcement
+ * @param now_ms Current monotonic time in milliseconds
+ */
+void doip_udp_tick(uint32_t now_ms);
+
 #endif /* DOIP_UDP_H */

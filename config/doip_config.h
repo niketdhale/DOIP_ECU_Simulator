@@ -32,7 +32,8 @@
 
 /* ===== ECU Logical Addresses (Configurable) ===== */
 /* Valid ECU Ranges: 0x0001-0x0DFF, 0x1000-0x7FFF, 0x8000-0xDFFF */
-#define DOIP_ECU_LOGICAL_ADDRESS    0x1003U     /* Changed from 0x0E00 */
+/* 0x0E00 is reserved for External Tester, so we use 0x1003 */
+#define DOIP_ECU_LOGICAL_ADDRESS    0x1003U     
 #define DOIP_OBD_LOGICAL_ADDRESS    0x1340U
 
 /* ===== Network Configuration ===== */
@@ -40,6 +41,7 @@
 #define DOIP_TCP_PORT               13400U
 #define DOIP_MULTICAST_ADDR         "224.0.0.1"
 #define DOIP_BROADCAST_ADDR         "255.255.255.255"
+#define DOIP_ANNOUNCE_INTERVAL_MS   2000U /* (ISO default 2-5s) */
 
 #define DOIP_MAX_PAYLOAD_SIZE       4096U
 #define DOIP_RX_TIMEOUT_MS          2000U
@@ -59,12 +61,5 @@ typedef void (*DoIP_TxConfirmation)(bool success);
 
 extern DoIP_RxIndication g_doip_rx_cb;
 extern DoIP_TxConfirmation g_doip_tx_cb;
-
-/* ===== API Declaration ===== */
-/**
- * @brief Validate configuration parameters against ISO 13400-2 constraints
- * @return 0 on success, -1 on validation failure
- */
-int DoIP_Config_Validate(void);
 
 #endif /* DOIP_CONFIG_H */

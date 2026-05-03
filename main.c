@@ -2,70 +2,61 @@
 #include <stdlib.h>
 #include <signal.h>
 #include <unistd.h>
-#include <string.h>
-#include "core/doip_log.h"
-#include "core/doip_det.h"
-#include "config/doip_config.h"
-#include "state/doip_fsm.h"
+#include <string.h>      
+#include "doip_api.h"
 
+/* Global flag for signal handling */
 static volatile int g_running = 1;
 static void sigint_handler(int sig) { (void)sig; g_running = 0; }
 
+/* Callback Example: State Change */
+void my_state_cb(uint8_t old_st, uint8_t new_st, void *ctx) {
+    (void)ctx; /* FIX: Suppress unused parameter warning */
+    printf("[APP] State changed: %d -> %d\n", old_st, new_st);
+}
+
 int main(int argc, char *argv[]) {
     signal(SIGINT, sigint_handler);
+
+    /* 1. Create Instance */
+    DoIP_Handle_t *handle = DoIP_Create();
+    if (!handle) {
+        fprintf(stderr, "Failed to create DoIP instance\n");
+        return EXIT_FAILURE;
+    }
+
+    /* 2. Configure */
+    DoIP_Config_t config = {0};
+    config.log_level = 3; /* DEBUG */
+    config.s3_server_timeout_ms = 5000;
+    config.on_state_change = my_state_cb;
     
-    /* Initialize Logging First (so we can log config errors) */
-    DoIP_LogLevel_t log_level = DOIP_LOG_LEVEL_INFO;
-    DoIP_LogModule_t log_modules = DOIP_LOG_MODULE_ALL;
-    const char *log_file = NULL;
-    uint32_t s3_timeout = 5000;
-    
+    /* Check for command line args to override log file */
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "-v") == 0) log_level = DOIP_LOG_LEVEL_VERBOSE;
-        else if (strcmp(argv[i], "-d") == 0) log_level = DOIP_LOG_LEVEL_DEBUG;
-        else if (strcmp(argv[i], "-q") == 0) log_level = DOIP_LOG_LEVEL_WARN;
-        else if (strcmp(argv[i], "--log-file") == 0 && i + 1 < argc) log_file = argv[++i];
-        else if (strcmp(argv[i], "--tcp-only") == 0) log_modules = DOIP_LOG_MODULE_TCP;
-        else if (strcmp(argv[i], "--uds-only") == 0) log_modules = DOIP_LOG_MODULE_UDS;
-        else if (strcmp(argv[i], "--s3") == 0 && i + 1 < argc) s3_timeout = (uint32_t)atoi(argv[++i]);
+        if (strcmp(argv[i], "--log-file") == 0 && i + 1 < argc) {
+            config.log_file_path = argv[++i];
+        }
     }
-    
-    if (DoIP_Log_Init(log_level, log_modules, log_file) != 0) {
-        fprintf(stderr, "Failed to initialize logging\n");
-        return EXIT_FAILURE;
-    }
-    
-    LOG_CORE("=== DoIP ECU Simulator Starting ===");
 
-    /* 1. Validate Configuration (AUTOSAR Compliance) */
-    if (DoIP_Config_Validate() != 0) {
-        LOG_ERROR(DOIP_LOG_MODULE_CORE, "❌ Configuration validation failed. Exiting.");
-        DoIP_Log_DeInit();
+    /* 3. Initialize */
+    if (DoIP_Init(handle, &config) != 0) {
+        fprintf(stderr, "DoIP Initialization failed\n");
+        DoIP_Destroy(handle);
         return EXIT_FAILURE;
     }
 
-    LOG_CORE("Log level: %d, Modules: 0x%02X, S3: %u ms", log_level, log_modules, s3_timeout);
-    if (log_file) LOG_CORE("Logging to file: %s", log_file);
+    printf("DoIP Simulator Running. Press Ctrl+C to exit.\n");
 
-    /* 2. Initialize FSM */
-    if (DoIP_Fsm_Init(s3_timeout) != 0) {
-        DOIP_LOG_ERROR(DOIP_LOG_MODULE_CORE, "FSM initialization failed");
-        DoIP_Log_DeInit();
-        return EXIT_FAILURE;
-    }
-
-    LOG_CORE("System ready. Press Ctrl+C to exit.");
-
-    /* 3. Main Loop */
+    /* 4. Main Loop */
     while (g_running) {
-        DoIP_Fsm_MainFunction();
-        usleep(1000);
+        DoIP_Tick(handle);
+        usleep(1000); /* 1ms scheduler tick */
     }
 
-    LOG_CORE("Shutting down...");
-    DoIP_Fsm_DeInit();
-    DoIP_Log_DeInit();
+    /* 5. Cleanup */
+    DoIP_DeInit(handle);
+    DoIP_Destroy(handle);
     
-    printf("Cleanup complete.\n");
+    printf("Shutdown complete.\n");
     return EXIT_SUCCESS;
 }
