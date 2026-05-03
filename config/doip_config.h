@@ -41,13 +41,22 @@
 #define DOIP_TCP_PORT               13400U
 #define DOIP_MULTICAST_ADDR         "224.0.0.1"
 #define DOIP_BROADCAST_ADDR         "255.255.255.255"
-#define DOIP_ANNOUNCE_INTERVAL_MS   2000U /* (ISO default 2-5s) */
 
 #define DOIP_MAX_PAYLOAD_SIZE       4096U
 #define DOIP_RX_TIMEOUT_MS          2000U
 #define DOIP_TX_TIMEOUT_MS          2000U
 #define DOIP_ROUTING_ACTIVATION_TIMEOUT_MS 5000U
-#define DOIP_ENABLE_PERIODIC_ANNOUNCE  true  /* Set false to disable at compile-time */
+
+/* ===== Periodic Announcement Configuration ===== */
+/* Set to false to disable periodic announcements completely */
+#define DOIP_ENABLE_PERIODIC_ANNOUNCE  true
+
+/* Interval between announcements (milliseconds) */
+#define DOIP_ANNOUNCE_INTERVAL_MS   2000U /* (ISO default 2-5s) */
+
+/* Maximum number of announcements to send at startup. 
+   Set to 0 to disable, or 5 to send exactly 5 times then stop. */
+#define DOIP_ANNOUNCE_COUNT_MAX        5
 
 /* ===== Feature Toggles ===== */
 #define DOIP_DEV_ERROR_DETECT       false

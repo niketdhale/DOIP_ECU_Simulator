@@ -10,13 +10,12 @@
 #include <errno.h>
 #include <stdio.h>
 #include <fcntl.h>
-#include <time.h>
 
 static int g_udp_sock = -1;
 static struct sockaddr_in g_multicast_addr;
 static DoIP_RxIndication g_rx_cb = NULL;
 static uint32_t g_last_announce_ms = 0;
-static bool g_periodic_announce_enabled = DOIP_ENABLE_PERIODIC_ANNOUNCE;
+static uint32_t g_announcement_count = 0; /* Counter for startup burst */
 
 static int udp_send_payload(uint16_t ptype, const void *payload, uint32_t plen) {
     if (g_udp_sock < 0 || (plen > 0 && !payload) || plen > DOIP_MAX_PAYLOAD_SIZE) return -1;
@@ -48,19 +47,12 @@ int doip_udp_init(void) {
     g_multicast_addr.sin_port = htons(DOIP_UDP_PORT);
     g_multicast_addr.sin_addr.s_addr = inet_addr(DOIP_MULTICAST_ADDR);
     
-    /* Initialize broadcast timer */
-    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
-    g_last_announce_ms = (uint32_t)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
+    /* Reset counters on init */
+    g_last_announce_ms = 0;
+    g_announcement_count = 0;
     
     LOG_INFO(DOIP_LOG_MODULE_UDP, "UDP socket initialized on port %d", DOIP_UDP_PORT);
     return 0;
-}
-
-int doip_send_vehicle_announce(const doip_vehicle_announce_t *announce) {
-    if (!announce || g_udp_sock < 0) return -1;
-    int ret = udp_send_payload(DOIP_PT_VEHICLE_ANNOUNCE, announce, sizeof(doip_vehicle_announce_t));
-    if (ret == 0) LOG_INFO(DOIP_LOG_MODULE_UDP, "✅ Sent Vehicle Announcement");
-    return ret;
 }
 
 int doip_udp_poll(DoIP_RxIndication rx_cb) {
@@ -82,47 +74,49 @@ int doip_udp_poll(DoIP_RxIndication rx_cb) {
 
     LOG_DEBUG(DOIP_LOG_MODULE_UDP, "[RX] PT=0x%04X, Len=%u", hdr.payload_type, hdr.payload_length);
     if (rx_cb) rx_cb(hdr.payload_type, rx_buf + DOIP_HEADER_SIZE, hdr.payload_length);
-    doip_udp_handle_request(hdr.payload_type, rx_buf + DOIP_HEADER_SIZE, hdr.payload_length);
-    return 0;
-}
-
-void doip_udp_handle_request(uint16_t ptype, const uint8_t *data, uint32_t len) {
-    (void)data; (void)len;
-    if (ptype == DOIP_PT_VIN_REQ || ptype == DOIP_PT_EID_REQ) {
+    
+    /* Handle VIN/EID Requests */
+    if (hdr.payload_type == DOIP_PT_VIN_REQ || hdr.payload_type == DOIP_PT_EID_REQ) {
         LOG_DEBUG(DOIP_LOG_MODULE_UDP, "Handling VIN/EID Request");
         doip_vehicle_announce_t resp = {0};
         memcpy(resp.vin, "WBAXXXXXXXXXXXXXX", DOIP_VIN_LENGTH);
-        /* FIX: Use config macro instead of hardcoded 0x0E00 */
-        resp.logical_address = htons(DOIP_ECU_LOGICAL_ADDRESS); 
+        /* ✅ FIXED: Use config macro instead of hardcoded 0x0E00 */
+        resp.logical_address = htons(DOIP_ECU_LOGICAL_ADDRESS);
         memset(resp.eid, 0xAA, DOIP_EID_LENGTH);
         memset(resp.gid, 0xBB, DOIP_GID_LENGTH);
         resp.further_action = htonl(0x00000000);
         resp.vin_sync_status = htons(0x0010);
         udp_send_payload(DOIP_PT_VIN_RES, &resp, sizeof(resp));
     }
+    return 0;
 }
 
-void doip_udp_set_periodic_announce(bool enable) {
-    g_periodic_announce_enabled = enable;
-    LOG_INFO(DOIP_LOG_MODULE_UDP, "Periodic Announcement: %s", enable ? "ENABLED" : "DISABLED");
-}
-
+/* ✅ NEW: Tick function with Counter Logic */
 void doip_udp_tick(uint32_t now_ms) {
-    if (g_udp_sock < 0 || !g_periodic_announce_enabled) return;
-    
-    if (now_ms - g_last_announce_ms >= DOIP_ANNOUNCE_INTERVAL_MS) {
-        g_last_announce_ms = now_ms;
-        doip_vehicle_announce_t ann = {0};
-        memcpy(ann.vin, "WBAXXXXXXXXXXXXXX", DOIP_VIN_LENGTH);
-        ann.logical_address = htons(DOIP_ECU_LOGICAL_ADDRESS);
-        memset(ann.eid, 0xAA, DOIP_EID_LENGTH);
-        memset(ann.gid, 0xBB, DOIP_GID_LENGTH);
-        ann.further_action = htonl(0x00000000);
-        ann.vin_sync_status = htons(0x0010);
-        
-        if (udp_send_payload(DOIP_PT_VEHICLE_ANNOUNCE, &ann, sizeof(ann)) == 0) {
-            LOG_DEBUG(DOIP_LOG_MODULE_UDP, "📡 Periodic Vehicle Announcement sent");
-        }
+    /* 1. Check Compile-time toggle (Disable completely if false) */
+    if (!DOIP_ENABLE_PERIODIC_ANNOUNCE) return;
+
+    /* 2. Check if max count reached (e.g., 5 times) */
+    if (g_announcement_count >= DOIP_ANNOUNCE_COUNT_MAX) return;
+
+    /* 3. Check time interval */
+    if (now_ms - g_last_announce_ms < DOIP_ANNOUNCE_INTERVAL_MS) return;
+
+    /* Update timer and counter */
+    g_last_announce_ms = now_ms;
+    g_announcement_count++;
+
+    /* Build and Send Announcement */
+    doip_vehicle_announce_t ann = {0};
+    memcpy(ann.vin, "WBAXXXXXXXXXXXXXX", DOIP_VIN_LENGTH);
+    ann.logical_address = htons(DOIP_ECU_LOGICAL_ADDRESS);
+    memset(ann.eid, 0xAA, DOIP_EID_LENGTH);
+    memset(ann.gid, 0xBB, DOIP_GID_LENGTH);
+    ann.further_action = htonl(0x00000000);
+    ann.vin_sync_status = htons(0x0010);
+
+    if (udp_send_payload(DOIP_PT_VEHICLE_ANNOUNCE, &ann, sizeof(ann)) == 0) {
+        LOG_INFO(DOIP_LOG_MODULE_UDP, "📡 Vehicle Announcement %u/%u sent", g_announcement_count, DOIP_ANNOUNCE_COUNT_MAX);
     }
 }
 

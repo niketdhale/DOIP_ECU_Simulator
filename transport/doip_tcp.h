@@ -4,6 +4,7 @@
 #include "config/doip_config.h"
 #include "core/doip_types.h"
 #include "core/doip_api.h"
+#include "transport/doip_uds.h" 
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -13,49 +14,35 @@
     typedef uint32_t doip_logical_addr_t;
 #endif
 
-/* Routing Activation Request Payload */
 typedef struct __attribute__((packed)) {
     doip_logical_addr_t tester_logical_address;
     uint8_t             activation_type;
-    uint32_t            reserved; /* Fixed 4 bytes (0x00000000) */
+    uint32_t            reserved;
 } doip_routing_act_req_t;
 
-/* Routing Activation Response Payload */
 typedef struct __attribute__((packed)) {
     doip_logical_addr_t ecu_logical_address;
     doip_logical_addr_t tester_logical_address;
     uint8_t             activation_code;
     uint8_t             reserved_align;
-    uint32_t            reserved; /* Fixed 4 bytes (0x00000000) */
+    uint32_t            reserved;
 } doip_routing_act_res_t;
 
-/* Client state machine */
-typedef enum {
-    DOIP_TCP_STATE_IDLE,
-    DOIP_TCP_STATE_CONNECTED,
-    DOIP_TCP_STATE_ACTIVATED,
-    DOIP_TCP_STATE_CLOSING
-} doip_tcp_state_t;
+typedef enum { DOIP_TCP_STATE_IDLE, DOIP_TCP_STATE_CONNECTED, DOIP_TCP_STATE_ACTIVATED, DOIP_TCP_STATE_CLOSING } doip_tcp_state_t;
 
-/* Per-client context */
 typedef struct {
     int                 fd;
     doip_tcp_state_t    state;
     doip_logical_addr_t tester_logical_addr;
     uint32_t            last_activity_ms;
-    bool                in_use; /* Track if slot is active */
+    UdsClientContext_t  uds_ctx;   /*  Per-Client UDS State */
+    bool                in_use;
 } doip_client_t;
 
-/* Maximum concurrent TCP clients */
 #define DOIP_MAX_TCP_CLIENTS 5
 
-/* Initialize TCP listener */
 int doip_tcp_init(void);
-
-/* Non-blocking poll for all clients */
 int doip_tcp_poll(DoIP_RxIndication rx_cb);
-
-/* Cleanup */
 void doip_tcp_deinit(void);
 
 #endif /* DOIP_TCP_H */
