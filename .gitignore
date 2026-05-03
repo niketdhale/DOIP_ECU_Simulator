@@ -19,6 +19,9 @@ docs/
 Thumbs.db
 Desktop.ini
 
+# Claude Code (worktrees, plans, session data)
+.claude/
+
 # Editor/IDE
 .vscode/
 .idea/
