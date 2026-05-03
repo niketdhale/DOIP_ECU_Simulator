@@ -114,10 +114,9 @@ A C implementation of the **Diagnostic over Internet Protocol (DoIP)** stack for
 │   └── consumer.c          # Minimal example linking against libdoip.so
 │
 ├── test/
-│   └── udp_discovery_test.c  # Standalone UDP discovery test (legacy)
-│
-├── test_routing_act.py     # Python integration test: routing activation + UDS
-├── test_multi_client.py    # Python integration test: 3 concurrent clients
+│   ├── udp_discovery_test.c  # Standalone UDP discovery test (legacy)
+│   ├── test_routing_act.py   # Python integration test: routing activation + UDS
+│   └── test_multi_client.py  # Python integration test: 3 concurrent clients
 │
 ├── Makefile                # Build system
 ├── Doxyfile                # Doxygen configuration
@@ -171,7 +170,7 @@ make clean
 Expected output:
 ```
 [INFO ] DoIP API: Initializing with S3=5000 ms
-[INFO ] ✅ Configuration validation passed.
+[INFO ] Configuration validation passed.
 [INFO ] UDP socket bound on port 13400
 [INFO ] TCP server listening on port 13400 (max 5 clients)
 DoIP Simulator Running. Press Ctrl+C to exit.
