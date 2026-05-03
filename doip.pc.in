@@ -1,0 +1,11 @@
+prefix=@PREFIX@
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+
+Name: doip
+Description: DoIP ECU Simulator - ISO 13400-2 Server and Client library
+URL: https://github.com/user/doip-ecu-simulator
+Version: @VERSION@
+Libs: -L${libdir} -ldoip -lpthread
+Cflags: -I${includedir}

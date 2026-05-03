@@ -1,3 +1,12 @@
+/**
+ * @file doip_log_config.h
+ * @brief Logging subsystem configuration.
+ *
+ * Compile-time settings for log levels, output features (colours,
+ * timestamps, source location), and per-module enable masks.
+ *
+ * @ingroup doip_config
+ */
 #ifndef DOIP_LOG_CONFIG_H
 #define DOIP_LOG_CONFIG_H
 

@@ -1,0 +1,65 @@
+# Doxyfile for DoIP ECU Simulator
+# Generate with: make docs  (or: doxygen Doxyfile)
+
+#---------------------------------------------------------------------------
+# Project
+#---------------------------------------------------------------------------
+PROJECT_NAME           = "DoIP ECU Simulator"
+PROJECT_NUMBER         = 1.0.0
+PROJECT_BRIEF          = "ISO 13400-2 DoIP Server & Client library for automotive diagnostics"
+OUTPUT_DIRECTORY       = docs
+
+#---------------------------------------------------------------------------
+# Input
+#---------------------------------------------------------------------------
+INPUT                  = include \
+                         doip_api.h \
+                         client/doip_client.h \
+                         core/doip_log.h \
+                         core/doip_types.h \
+                         config/doip_config.h \
+                         config/doip_log_config.h \
+                         config/doip_uds_config.h
+RECURSIVE              = NO
+FILE_PATTERNS          = *.h *.c
+
+#---------------------------------------------------------------------------
+# Extraction
+#---------------------------------------------------------------------------
+EXTRACT_ALL            = NO
+EXTRACT_STATIC         = NO
+EXTRACT_PRIVATE        = NO
+
+#---------------------------------------------------------------------------
+# Output formats
+#---------------------------------------------------------------------------
+GENERATE_HTML          = YES
+HTML_OUTPUT            = html
+HTML_COLORSTYLE        = LIGHT
+
+GENERATE_LATEX         = NO
+GENERATE_MAN           = NO
+GENERATE_XML           = NO
+
+#---------------------------------------------------------------------------
+# Preprocessing
+#---------------------------------------------------------------------------
+ENABLE_PREPROCESSING   = YES
+MACRO_EXPANSION        = YES
+PREDEFINED             = DOIP_API= \
+                         __attribute__(x)=
+
+#---------------------------------------------------------------------------
+# Diagrams
+#---------------------------------------------------------------------------
+HAVE_DOT               = NO
+
+#---------------------------------------------------------------------------
+# Misc
+#---------------------------------------------------------------------------
+QUIET                  = YES
+WARNINGS               = YES
+WARN_IF_UNDOCUMENTED   = YES
+OPTIMIZE_OUTPUT_FOR_C  = YES
+TYPEDEF_HIDES_STRUCT   = YES
+SORT_MEMBER_DOCS       = NO

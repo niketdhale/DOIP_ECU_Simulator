@@ -1,3 +1,14 @@
+/**
+ * @file doip_types.h
+ * @brief DoIP protocol structures and payload type constants.
+ *
+ * Contains the generic DoIP header, all payload type enumerations
+ * (ISO 13400-2 Table 17), NACK codes, routing activation codes,
+ * and the Vehicle Announcement payload layout.
+ *
+ * @defgroup doip_types Protocol Types
+ * @{
+ */
 #ifndef DOIP_TYPES_H
 #define DOIP_TYPES_H
 
@@ -57,5 +68,7 @@ typedef struct __attribute__((packed)) {
     uint32_t further_action;     /* Bitmask: 0x01=Routing activation required */
     uint16_t vin_sync_status;    /* 0x0010=VIN/GID/EID synchronized */
 } doip_vehicle_announce_t;
+
+/** @} */ /* end of doip_types group */
 
 #endif /* DOIP_TYPES_H */
