@@ -108,7 +108,7 @@ int DoIP_Init(DoIP_Handle_t *handle, const DoIP_Config_t *config) {
     return 0;
 }
 
-/* ⬅️ CORRECTED: Single implementation calling both FSM and UDP Tick */
+/* CORRECTED: Single implementation calling both FSM and UDP Tick */
 void DoIP_Tick(DoIP_Handle_t *handle) {
     if (!handle || !handle->is_initialized) return;
     
@@ -150,4 +150,9 @@ void DoIP_SetLogLevel(DoIP_Handle_t *handle, uint8_t level) {
     if (!handle) return;
     handle->config.log_level = level;
     DoIP_Log_SetLevel(level);
+}
+
+void DoIP_EnablePeriodicAnnounce(DoIP_Handle_t *handle, bool enable) {
+    if (!handle || !handle->is_initialized) return;
+    doip_udp_set_periodic_announce(enable);
 }

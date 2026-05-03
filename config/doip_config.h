@@ -47,6 +47,7 @@
 #define DOIP_RX_TIMEOUT_MS          2000U
 #define DOIP_TX_TIMEOUT_MS          2000U
 #define DOIP_ROUTING_ACTIVATION_TIMEOUT_MS 5000U
+#define DOIP_ENABLE_PERIODIC_ANNOUNCE  true  /* Set false to disable at compile-time */
 
 /* ===== Feature Toggles ===== */
 #define DOIP_DEV_ERROR_DETECT       false

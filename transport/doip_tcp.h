@@ -25,8 +25,8 @@ typedef struct __attribute__((packed)) {
     doip_logical_addr_t ecu_logical_address;
     doip_logical_addr_t tester_logical_address;
     uint8_t             activation_code;
-    uint8_t             reserved_align; /* 1-byte alignment padding */
-    uint32_t            reserved;       /* Fixed 4 bytes (0x00000000) */
+    uint8_t             reserved_align;
+    uint32_t            reserved; /* Fixed 4 bytes (0x00000000) */
 } doip_routing_act_res_t;
 
 /* Client state machine */
@@ -37,15 +37,25 @@ typedef enum {
     DOIP_TCP_STATE_CLOSING
 } doip_tcp_state_t;
 
+/* Per-client context */
 typedef struct {
     int                 fd;
-    doip_logical_addr_t tester_logical_addr;
     doip_tcp_state_t    state;
+    doip_logical_addr_t tester_logical_addr;
     uint32_t            last_activity_ms;
+    bool                in_use; /* Track if slot is active */
 } doip_client_t;
 
+/* Maximum concurrent TCP clients */
+#define DOIP_MAX_TCP_CLIENTS 5
+
+/* Initialize TCP listener */
 int doip_tcp_init(void);
+
+/* Non-blocking poll for all clients */
 int doip_tcp_poll(DoIP_RxIndication rx_cb);
+
+/* Cleanup */
 void doip_tcp_deinit(void);
 
 #endif /* DOIP_TCP_H */

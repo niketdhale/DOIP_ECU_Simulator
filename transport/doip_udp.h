@@ -26,4 +26,9 @@ void doip_udp_deinit(void);
  */
 void doip_udp_tick(uint32_t now_ms);
 
+/**
+ * @brief Enable or disable periodic Vehicle Announcement at runtime
+ */
+void doip_udp_set_periodic_announce(bool enable);
+
 #endif /* DOIP_UDP_H */

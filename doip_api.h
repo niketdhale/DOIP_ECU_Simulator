@@ -90,4 +90,11 @@ void DoIP_Destroy(DoIP_Handle_t *handle);
  */
 void DoIP_SetLogLevel(DoIP_Handle_t *handle, uint8_t level);
 
+/**
+ * @brief Enable or disable periodic Vehicle Announcement at runtime
+ * @param handle DoIP instance handle
+ * @param enable true to enable, false to disable
+ */
+void DoIP_EnablePeriodicAnnounce(DoIP_Handle_t *handle, bool enable);
+
 #endif /* DOIP_API_H */

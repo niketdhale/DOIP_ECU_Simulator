@@ -16,6 +16,7 @@ static int g_udp_sock = -1;
 static struct sockaddr_in g_multicast_addr;
 static DoIP_RxIndication g_rx_cb = NULL;
 static uint32_t g_last_announce_ms = 0;
+static bool g_periodic_announce_enabled = DOIP_ENABLE_PERIODIC_ANNOUNCE;
 
 static int udp_send_payload(uint16_t ptype, const void *payload, uint32_t plen) {
     if (g_udp_sock < 0 || (plen > 0 && !payload) || plen > DOIP_MAX_PAYLOAD_SIZE) return -1;
@@ -91,7 +92,7 @@ void doip_udp_handle_request(uint16_t ptype, const uint8_t *data, uint32_t len) 
         LOG_DEBUG(DOIP_LOG_MODULE_UDP, "Handling VIN/EID Request");
         doip_vehicle_announce_t resp = {0};
         memcpy(resp.vin, "WBAXXXXXXXXXXXXXX", DOIP_VIN_LENGTH);
-        /* ✅ FIX: Use config macro instead of hardcoded 0x0E00 */
+        /* FIX: Use config macro instead of hardcoded 0x0E00 */
         resp.logical_address = htons(DOIP_ECU_LOGICAL_ADDRESS); 
         memset(resp.eid, 0xAA, DOIP_EID_LENGTH);
         memset(resp.gid, 0xBB, DOIP_GID_LENGTH);
@@ -101,9 +102,14 @@ void doip_udp_handle_request(uint16_t ptype, const uint8_t *data, uint32_t len) 
     }
 }
 
-/* ⬅️ NEW: Periodic Announcement Tick */
+void doip_udp_set_periodic_announce(bool enable) {
+    g_periodic_announce_enabled = enable;
+    LOG_INFO(DOIP_LOG_MODULE_UDP, "Periodic Announcement: %s", enable ? "ENABLED" : "DISABLED");
+}
+
 void doip_udp_tick(uint32_t now_ms) {
-    if (g_udp_sock < 0) return;
+    if (g_udp_sock < 0 || !g_periodic_announce_enabled) return;
+    
     if (now_ms - g_last_announce_ms >= DOIP_ANNOUNCE_INTERVAL_MS) {
         g_last_announce_ms = now_ms;
         doip_vehicle_announce_t ann = {0};
@@ -115,7 +121,7 @@ void doip_udp_tick(uint32_t now_ms) {
         ann.vin_sync_status = htons(0x0010);
         
         if (udp_send_payload(DOIP_PT_VEHICLE_ANNOUNCE, &ann, sizeof(ann)) == 0) {
-            LOG_DEBUG(DOIP_LOG_MODULE_UDP, " Periodic Vehicle Announcement sent");
+            LOG_DEBUG(DOIP_LOG_MODULE_UDP, "📡 Periodic Vehicle Announcement sent");
         }
     }
 }
