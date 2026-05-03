@@ -120,6 +120,33 @@ uninstall:
 	rm -f  $(DESTDIR)$(PREFIX)/lib/pkgconfig/doip.pc
 
 # =====================================================================
+# Library Integration Test
+# Build server + client main files linked against libdoip.so (not .o files)
+# =====================================================================
+LIB_TEST_SERVER = test_lib_server
+LIB_TEST_CLIENT = test_lib_client
+LIB_TEST_EXAMPLE = test_lib_example
+
+test-lib: lib $(LIB_TEST_SERVER) $(LIB_TEST_CLIENT) $(LIB_TEST_EXAMPLE)
+	@echo ""
+	@echo "=== Library test binaries built ==="
+	@echo "Run in two terminals:"
+	@echo "  Terminal 1 (server): LD_LIBRARY_PATH=. ./$(LIB_TEST_SERVER)"
+	@echo "  Terminal 2 (client): LD_LIBRARY_PATH=. ./$(LIB_TEST_CLIENT) 127.0.0.1"
+	@echo ""
+	@echo "Minimal API example:"
+	@echo "  LD_LIBRARY_PATH=. ./$(LIB_TEST_EXAMPLE) 127.0.0.1"
+
+$(LIB_TEST_SERVER): main.c libdoip.so
+	$(CC) $(CFLAGS) $< -L. -ldoip $(LDFLAGS) -o $@
+
+$(LIB_TEST_CLIENT): client/main_client.c libdoip.so
+	$(CC) $(CFLAGS) $< -L. -ldoip $(LDFLAGS) -o $@
+
+$(LIB_TEST_EXAMPLE): example/consumer.c libdoip.so
+	$(CC) $(CFLAGS) $< -L. -ldoip $(LDFLAGS) -o $@
+
+# =====================================================================
 # Documentation
 # =====================================================================
 docs:
@@ -132,5 +159,6 @@ clean:
 	rm -f $(OBJS) $(TARGET)
 	rm -f $(CLIENT_OBJS) $(CLIENT_TARGET)
 	rm -f $(LIB_OBJS) $(SHARED_LIB) $(STATIC_LIB) $(SONAME) libdoip.so
+	rm -f $(LIB_TEST_SERVER) $(LIB_TEST_CLIENT) $(LIB_TEST_EXAMPLE)
 
-.PHONY: all lib install uninstall docs clean
+.PHONY: all lib test-lib install uninstall docs clean
