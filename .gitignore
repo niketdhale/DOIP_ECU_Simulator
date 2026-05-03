@@ -1,12 +1,18 @@
 # Build artifacts
 *.o
+*.lo
 *.a
 *.so
+*.so.*
 *.dylib
 doip_ecu_sim
+doip_client_demo
 doip_discovery_test
 build/
 out/
+
+# Generated documentation
+docs/
 
 # OS files
 .DS_Store

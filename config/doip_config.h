@@ -1,3 +1,14 @@
+/**
+ * @file doip_config.h
+ * @brief DoIP protocol and network configuration.
+ *
+ * Compile-time tunables for the DoIP stack: protocol version selection,
+ * logical addresses, network ports, timeouts, periodic announcement
+ * parameters, and feature toggles.
+ *
+ * @defgroup doip_config Configuration
+ * @{
+ */
 #ifndef DOIP_CONFIG_H
 #define DOIP_CONFIG_H
 
@@ -8,7 +19,7 @@
 #define DOIP_VERSION_2012   0  /* ISO 13400-2:2012 (16-bit addresses) */
 #define DOIP_VERSION_2019   1  /* ISO 13400-2:2019 (32-bit addresses) */
 
-/* 🔧 CONFIGURABLE: Set your DoIP version here */
+/* CONFIGURABLE: Set your DoIP version here */
 #define DOIP_PROTOCOL_VERSION_SELECTED  DOIP_VERSION_2012
 
 /* ===== Protocol Version Constants ===== */
@@ -71,5 +82,7 @@ typedef void (*DoIP_TxConfirmation)(bool success);
 
 extern DoIP_RxIndication g_doip_rx_cb;
 extern DoIP_TxConfirmation g_doip_tx_cb;
+
+/** @} */ /* end of doip_config group */
 
 #endif /* DOIP_CONFIG_H */

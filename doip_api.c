@@ -35,7 +35,7 @@ static int DoIP_Config_Validate(void) {
     if (DOIP_TCP_PORT == 0 || DOIP_UDP_PORT == 0) { LOG_ERROR(DOIP_LOG_MODULE_CORE, "Config Error: Ports cannot be 0."); return -1; }
     if (DOIP_MAX_PAYLOAD_SIZE < 8) { LOG_ERROR(DOIP_LOG_MODULE_CORE, "Config Error: Payload size too small."); return -1; }
     if (DOIP_ROUTING_ACTIVATION_TIMEOUT_MS < 1000) { LOG_ERROR(DOIP_LOG_MODULE_CORE, "Config Error: Timeout too short."); return -1; }
-    LOG_INFO(DOIP_LOG_MODULE_CORE, "✅ Configuration validation passed.");
+    LOG_INFO(DOIP_LOG_MODULE_CORE, "Configuration validation passed.");
     return 0;
 }
 

@@ -1,3 +1,13 @@
+/**
+ * @file doip_uds_config.h
+ * @brief UDS (ISO 14229) service and parameter configuration.
+ *
+ * Defines all Service IDs (SIDs), sub-function constants, Negative
+ * Response Codes (NRCs), Data Identifiers (DIDs), timing parameters,
+ * and simulator feature toggles for the UDS layer.
+ *
+ * @ingroup doip_config
+ */
 #ifndef DOIP_UDS_CONFIG_H
 #define DOIP_UDS_CONFIG_H
 

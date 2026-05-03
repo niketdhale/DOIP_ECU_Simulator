@@ -33,7 +33,7 @@ static int handle_session_control(UdsClientContext_t *ctx, const uint8_t *req, u
     res[0] = UDS_SID_SESSION_CONTROL_RES; res[1] = session_type;
     res[2] = 0x00; res[3] = 0x32; res[4] = 0x01; res[5] = 0xF4;
     *res_len = 6;
-    LOG_INFO(DOIP_LOG_MODULE_UDS, " Session changed to: 0x%02X", session_type);
+    LOG_INFO(DOIP_LOG_MODULE_UDS, "Session changed to: 0x%02X", session_type);
     DoIP_Fsm_OnUdsSessionChange(session_type);
     return 0;
 }
@@ -76,7 +76,7 @@ static int handle_ecu_reset(UdsClientContext_t *ctx, const uint8_t *req, uint16_
         res[0] = 0x7F; res[1] = UDS_SID_ECU_RESET; res[2] = UDS_NRC_INCORRECT_MESSAGE_LENGTH; *res_len = 3; return -1;
     }
     res[0] = UDS_SID_ECU_RESET_RES; res[1] = req[1]; *res_len = 2;
-    LOG_WARN(DOIP_LOG_MODULE_UDS, " ECU Reset requested (simulated)");
+    LOG_WARN(DOIP_LOG_MODULE_UDS, "ECU Reset requested (simulated)");
     return 0;
 }
 
