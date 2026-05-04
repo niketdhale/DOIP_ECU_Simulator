@@ -19,9 +19,13 @@ INPUT                  = include \
                          core/doip_types.h \
                          config/doip_config.h \
                          config/doip_log_config.h \
-                         config/doip_uds_config.h
+                         config/doip_uds_config.h \
+                         transport/doip_io.h \
+                         transport/doip_tls.h \
+                         transport/doip_isotp.h
 RECURSIVE              = NO
 FILE_PATTERNS          = *.h *.c
+USE_MDFILE_AS_MAINPAGE = README.md
 
 #---------------------------------------------------------------------------
 # Extraction
@@ -47,7 +51,10 @@ GENERATE_XML           = NO
 ENABLE_PREPROCESSING   = YES
 MACRO_EXPANSION        = YES
 PREDEFINED             = DOIP_API= \
-                         __attribute__(x)=
+                         __attribute__(x)= \
+                         DOIP_ENABLE_TLS=1 \
+                         DOIP_ENABLE_IPV6=1 \
+                         DOIP_ENABLE_ISO_TP=1
 
 #---------------------------------------------------------------------------
 # Diagrams
