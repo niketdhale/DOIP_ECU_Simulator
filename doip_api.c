@@ -3,20 +3,25 @@
 #include "core/doip_api.h"
 #include "state/doip_fsm.h"
 #include "transport/doip_udp.h"
+#include "transport/doip_tcp.h"
 #include "config/doip_config.h"
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <pthread.h>
 
-/* Satisfy extern declarations in config/doip_config.h and core/doip_api.h */
-DoIP_RxIndication   g_doip_rx_cb = NULL;
-DoIP_TxConfirmation g_doip_tx_cb = NULL;
+/* Satisfy extern declarations in config/doip_config.h */
+DoIP_RxIndication        g_doip_rx_cb                = NULL;
+DoIP_TxConfirmation      g_doip_tx_cb                = NULL;
+DoIP_ClientConnectCb     g_doip_client_connect_cb    = NULL;
+DoIP_ClientDisconnectCb  g_doip_client_disconnect_cb = NULL;
+DoIP_FrameReceivedCb     g_doip_frame_received_cb    = NULL;
+void                    *g_doip_async_user_ctx        = NULL;
 
 struct DoIP_Context {
-    DoIP_Config_t    config;
-    DoIP_EcuIdentity_t identity;   /* Resolved copy — defaults filled in DoIP_Init() */
-    bool             is_initialized;
+    DoIP_Config_t      config;
+    DoIP_EcuIdentity_t identity;        /* Resolved copy — defaults filled in DoIP_Init() */
+    bool               is_initialized;
 };
 
 /* Built-in default ECU identity (mirrors the previously hardcoded values) */
@@ -35,9 +40,18 @@ static const DoIP_EcuIdentity_t g_default_identity = {
 static pthread_mutex_t g_api_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static const DoIP_Config_t g_default_config = {
-    .log_level = DOIP_LOG_LEVEL_INFO, .log_file_path = NULL, .s3_server_timeout_ms = 5000,
-    .on_state_change = NULL, .on_rx_message = NULL, .user_context = NULL,
-    .ecu_identity = NULL, .on_uds_request = NULL
+    .log_level              = DOIP_LOG_LEVEL_INFO,
+    .log_file_path          = NULL,
+    .s3_server_timeout_ms   = 5000,
+    .on_state_change        = NULL,
+    .on_rx_message          = NULL,
+    .user_context           = NULL,
+    .ecu_identity           = NULL,
+    .on_uds_request         = NULL,
+    .on_client_connect      = NULL,
+    .on_client_disconnect   = NULL,
+    .on_frame_received      = NULL,
+    /* .tls fields default to zero (NULL pointers, false) */
 };
 
 static int DoIP_Config_Validate(void) {
@@ -80,7 +94,25 @@ int DoIP_Init(DoIP_Handle_t *handle, const DoIP_Config_t *config) {
         if (config->on_rx_message) handle->config.on_rx_message = config->on_rx_message;
         if (config->user_context) handle->config.user_context = config->user_context;
         if (config->on_uds_request) handle->config.on_uds_request = config->on_uds_request;
+        /* Async callbacks */
+        if (config->on_client_connect)    handle->config.on_client_connect    = config->on_client_connect;
+        if (config->on_client_disconnect) handle->config.on_client_disconnect = config->on_client_disconnect;
+        if (config->on_frame_received)    handle->config.on_frame_received    = config->on_frame_received;
     }
+
+    /* Publish async callbacks to the globals consumed by the TCP transport layer */
+    g_doip_client_connect_cb    = handle->config.on_client_connect;
+    g_doip_client_disconnect_cb = handle->config.on_client_disconnect;
+    g_doip_frame_received_cb    = handle->config.on_frame_received;
+    g_doip_async_user_ctx       = handle->config.user_context;
+
+#if DOIP_ENABLE_TLS
+    /* Forward TLS cert/key/CA paths to the TCP transport before FSM init opens sockets */
+    if (config) {
+        doip_tcp_tls_config(config->tls.cert_file,  config->tls.key_file,
+                             config->tls.ca_file,    config->tls.verify_peer);
+    }
+#endif
 
     /* Resolve ECU identity: use caller-supplied struct or built-in defaults */
     if (config && config->ecu_identity)

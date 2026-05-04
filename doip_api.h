@@ -17,6 +17,7 @@
 #include <stdbool.h>
 #include "include/doip_version.h"
 #include "core/doip_types.h"
+#include "config/doip_config.h"
 
 /**
  * @brief Opaque handle for the DoIP Simulator instance.
@@ -95,6 +96,51 @@ typedef struct {
                           const uint8_t *req, uint16_t req_len,
                           uint8_t *resp, uint16_t resp_size, uint16_t *resp_len_out,
                           void *user_ctx);
+
+    /* ----- Async / Non-blocking event callbacks (all optional, may be NULL) ----- */
+
+    /**
+     * @brief Called when a new TCP client successfully connects.
+     *
+     * @param[in]  client_fd  The accepted socket file descriptor.
+     * @param[in]  user_ctx   Context pointer from DoIP_Config_t::user_context.
+     */
+    void (*on_client_connect)(int client_fd, void *user_ctx);
+
+    /**
+     * @brief Called when a TCP client disconnects (timeout, error, or peer close).
+     *
+     * @param[in]  client_fd  The file descriptor that was closed.
+     * @param[in]  user_ctx   Context pointer from DoIP_Config_t::user_context.
+     */
+    void (*on_client_disconnect)(int client_fd, void *user_ctx);
+
+    /**
+     * @brief Called when a complete DoIP frame arrives, before built-in dispatch.
+     *
+     * Allows the application to intercept or log any DoIP payload.
+     *
+     * @param[in]  client_fd File descriptor of the source client.
+     * @param[in]  pt        DoIP payload type (e.g., 0x8001 = Diagnostic Message).
+     * @param[in]  payload   Raw payload bytes.
+     * @param[in]  plen      Payload length in bytes.
+     * @param[in]  user_ctx  Context pointer from DoIP_Config_t::user_context.
+     * @retval  0   Application handled the frame — skip built-in handler.
+     * @retval -1   Not handled — fall through to built-in handler.
+     */
+    int (*on_frame_received)(int client_fd,
+                             uint16_t pt, const uint8_t *payload, uint32_t plen,
+                             void *user_ctx);
+
+#if DOIP_ENABLE_TLS
+    /** TLS server certificate, key, and optional CA bundle. */
+    struct {
+        const char *cert_file;   /**< Path to PEM server certificate.              */
+        const char *key_file;    /**< Path to PEM private key.                     */
+        const char *ca_file;     /**< CA bundle for peer verification (NULL=skip). */
+        bool        verify_peer; /**< If true, require a valid client certificate. */
+    } tls;
+#endif /* DOIP_ENABLE_TLS */
 } DoIP_Config_t;
 
 /* ===== Lifecycle API ===== */

@@ -3,6 +3,32 @@ CFLAGS  = -Wall -Wextra -O2 -std=c11 -D_DEFAULT_SOURCE \
           -I. -Iconfig -Icore -Itransport -Istate
 LDFLAGS = -lpthread
 
+# ===== Optional Feature Flags =====
+# Enable by passing on the command line:
+#   make DOIP_IPV6=1                            — IPv6 dual-stack
+#   make DOIP_TLS=1                             — TLS on TCP / DTLS on UDP
+#   make DOIP_ISOTP=1                           — ISO-TP segmentation
+#   make DOIP_TLS=1 DOIP_IPV6=1 DOIP_ISOTP=1  — all features
+
+ifeq ($(DOIP_IPV6),1)
+  CFLAGS  += -DDOIP_ENABLE_IPV6=true
+endif
+
+ifeq ($(DOIP_TLS),1)
+  CFLAGS  += -DDOIP_ENABLE_TLS=true
+  LDFLAGS += -lssl -lcrypto
+  FEAT_TLS_SRCS = transport/doip_tls.c transport/doip_io.c
+else
+  FEAT_TLS_SRCS = transport/doip_io.c
+endif
+
+ifeq ($(DOIP_ISOTP),1)
+  CFLAGS       += -DDOIP_ENABLE_ISO_TP=true
+  FEAT_ISOTP_SRCS = transport/doip_isotp.c
+else
+  FEAT_ISOTP_SRCS =
+endif
+
 # ===== Library Versioning =====
 VERSION     = 1.0.0
 SONAME      = libdoip.so.1
@@ -20,7 +46,9 @@ SRC_MAIN = main.c
 
 OBJS   = $(SRC_CORE:.c=.o) $(SRC_API:.c=.o) \
          $(SRC_UDP:.c=.o) $(SRC_TCP:.c=.o) $(SRC_UDS:.c=.o) \
-         $(SRC_FSM:.c=.o) $(SRC_MAIN:.c=.o)
+         $(SRC_FSM:.c=.o) \
+         $(FEAT_TLS_SRCS:.c=.o) $(FEAT_ISOTP_SRCS:.c=.o) \
+         $(SRC_MAIN:.c=.o)
 TARGET = doip_ecu_sim
 
 # ===== Client (DoIP Tester) =====
@@ -30,6 +58,7 @@ CLIENT_TARGET = doip_client_demo
 
 # ===== Shared / Static Library =====
 LIB_SRC = $(SRC_CORE) $(SRC_API) $(SRC_UDP) $(SRC_TCP) $(SRC_UDS) $(SRC_FSM) \
+          $(FEAT_TLS_SRCS) $(FEAT_ISOTP_SRCS) \
           client/doip_client.c
 LIB_OBJS      = $(LIB_SRC:.c=.lo)
 LIB_CFLAGS    = $(CFLAGS) -fPIC -fvisibility=hidden -DDOIP_BUILDING_LIB
@@ -161,9 +190,11 @@ TEST_LDFLAGS = -lpthread
 INT_CFLAGS   = $(TEST_CFLAGS) -include tests/integration/doip_config_test.h
 
 # Production source files compiled into integration test binaries
+# Note: FEAT_TLS_SRCS already includes doip_io.c; otherwise we add it directly.
 PROD_SRCS    = core/doip_frame.c core/doip_log.c core/doip_det.c \
                doip_api.c \
                transport/doip_tcp.c transport/doip_udp.c transport/doip_uds.c \
+               $(FEAT_TLS_SRCS) $(FEAT_ISOTP_SRCS) \
                state/doip_fsm.c \
                client/doip_client.c
 
@@ -181,6 +212,11 @@ test-uds: $(UNITY_SRC) tests/unit/test_uds.c \
           core/doip_log.c core/doip_det.c
 	$(CC) $(TEST_CFLAGS) -o $@ $^ $(TEST_LDFLAGS)
 
+# ----- Unit: ISO-TP segmentation / reassembly (no sockets) ----------
+test-isotp: $(UNITY_SRC) tests/unit/test_isotp.c \
+            transport/doip_isotp.c core/doip_log.c core/doip_det.c
+	$(CC) $(TEST_CFLAGS) -DDOIP_ENABLE_ISO_TP=true -o $@ $^ $(TEST_LDFLAGS)
+
 # ----- Integration: full server lifecycle + TCP/UDP (port 23400) -----
 test-server: $(UNITY_SRC) tests/integration/test_server.c $(PROD_SRCS)
 	$(CC) $(INT_CFLAGS) -o $@ $^ $(TEST_LDFLAGS)
@@ -190,11 +226,12 @@ test-alive-bin: $(UNITY_SRC) tests/integration/test_alive_check.c $(PROD_SRCS)
 	$(CC) $(INT_CFLAGS) -o $@ $^ $(TEST_LDFLAGS)
 
 # ----- Runners -------------------------------------------------------
-test-unit: test-frame test-uds
+test-unit: test-frame test-uds test-isotp
 	@echo ""
 	@echo "=== Unit Tests ==="
 	./test-frame
 	./test-uds
+	./test-isotp
 	@echo "=== Unit Tests Complete ==="
 
 test-integration: test-server
@@ -212,7 +249,7 @@ test-alive: test-alive-bin
 # Fast CI target: unit + integration (< 15 s)
 test: test-unit test-integration
 
-.PHONY: test-unit test-integration test-alive test
+.PHONY: test-unit test-integration test-alive test-isotp test
 
 # =====================================================================
 # Documentation
@@ -228,6 +265,8 @@ clean:
 	rm -f $(CLIENT_OBJS) $(CLIENT_TARGET)
 	rm -f $(LIB_OBJS) $(SHARED_LIB) $(STATIC_LIB) $(SONAME) libdoip.so
 	rm -f $(LIB_TEST_SERVER) $(LIB_TEST_CLIENT) $(LIB_TEST_EXAMPLE)
-	rm -f test-frame test-uds test-server test-alive-bin
+	rm -f test-frame test-uds test-isotp test-server test-alive-bin
+	rm -f transport/doip_io.o transport/doip_tls.o transport/doip_isotp.o
+	rm -f transport/doip_io.lo transport/doip_tls.lo transport/doip_isotp.lo
 
 .PHONY: all lib test-lib install uninstall docs clean

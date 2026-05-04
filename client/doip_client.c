@@ -6,11 +6,13 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
+#include <netdb.h>
 #include <sys/time.h>
 #include <unistd.h>
 #include <string.h>
 #include <stdlib.h>
 #include <errno.h>
+#include <stdio.h>
 
 /* ===== Internal Client State Machine ===== */
 
@@ -28,7 +30,7 @@ struct DoIP_ClientContext {
     DoIP_ClientConfig_t  config;
     uint16_t             tester_la;
     uint16_t             peer_ecu_la;       /* ECU address learned from routing activation response */
-    char                 server_ip[INET_ADDRSTRLEN];
+    char                 server_ip[INET6_ADDRSTRLEN]; /* Wide enough for IPv4 or IPv6 */
     uint16_t             server_port;
     uint8_t              rx_payload[DOIP_MAX_PAYLOAD_SIZE];  /* scratch recv buffer */
 };
@@ -213,32 +215,55 @@ DoIP_ClientStatus_t DoIP_Client_Connect(DoIP_Client_t *client,
     if (client->state < DOIP_CLI_STATE_INITIALIZED) return DOIP_CLIENT_ERR_NOT_READY;
     if (client->tcp_fd >= 0) DoIP_Client_Disconnect(client);
 
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) return DOIP_CLIENT_ERR_SOCKET;
+    /* Use getaddrinfo() so the caller can pass either an IPv4 or IPv6 address */
+    char port_str[8];
+    snprintf(port_str, sizeof(port_str), "%u", server_port);
 
-    int one = 1;
-    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
-    client_set_rx_timeout(fd, client->config.connect_timeout_ms);
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family   = AF_UNSPEC;     /* Accept IPv4 or IPv6 */
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = IPPROTO_TCP;
 
-    struct sockaddr_in addr = {
-        .sin_family      = AF_INET,
-        .sin_port        = htons(server_port),
-        .sin_addr.s_addr = inet_addr(server_ip)
-    };
+    struct addrinfo *res = NULL;
+    int gai_rc = getaddrinfo(server_ip, port_str, &hints, &res);
+    if (gai_rc != 0 || !res) {
+        LOG_ERROR(DOIP_LOG_MODULE_CLIENT, "getaddrinfo(%s): %s",
+                  server_ip, gai_strerror(gai_rc));
+        return DOIP_CLIENT_ERR_SOCKET;
+    }
 
-    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+    int fd = -1;
+    struct addrinfo *rp;
+    for (rp = res; rp; rp = rp->ai_next) {
+        fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+        if (fd < 0) continue;
+
+        int one = 1;
+        setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+        client_set_rx_timeout(fd, client->config.connect_timeout_ms);
+
+        if (connect(fd, rp->ai_addr, rp->ai_addrlen) == 0) break; /* success */
+
+        close(fd);
+        fd = -1;
+    }
+    freeaddrinfo(res);
+
+    if (fd < 0) {
         LOG_ERROR(DOIP_LOG_MODULE_CLIENT, "connect(%s:%u) failed: %s",
                   server_ip, server_port, strerror(errno));
-        close(fd);
         return DOIP_CLIENT_ERR_SOCKET;
     }
 
     client->tcp_fd      = fd;
     client->server_port = server_port;
-    strncpy(client->server_ip, server_ip, INET_ADDRSTRLEN - 1);
+    strncpy(client->server_ip, server_ip, sizeof(client->server_ip) - 1);
+    client->server_ip[sizeof(client->server_ip) - 1] = '\0';
     client->state = DOIP_CLI_STATE_CONNECTED;
 
-    LOG_INFO(DOIP_LOG_MODULE_CLIENT, "Connected to %s:%u (fd=%d)", server_ip, server_port, fd);
+    LOG_INFO(DOIP_LOG_MODULE_CLIENT, "Connected to %s:%u (fd=%d)",
+             server_ip, server_port, fd);
     return DOIP_CLIENT_OK;
 }
 

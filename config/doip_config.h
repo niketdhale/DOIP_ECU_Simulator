@@ -82,12 +82,56 @@
 #define DOIP_SUPPORT_ROUTING_ACT    true
 #define DOIP_SUPPORT_ALIVE_CHECK    true
 
+/* ===== IPv6 Support =====
+ * Dual-stack sockets (AF_INET6 + IPV6_V6ONLY=0).
+ * Build with: make DOIP_IPV6=1
+ */
+#ifndef DOIP_ENABLE_IPV6
+#define DOIP_ENABLE_IPV6            false
+#endif
+#define DOIP_IPV6_MULTICAST_ADDR    "ff02::1"   /* DoIP IPv6 link-local multicast (ISO 13400-2:2019) */
+
+/* ===== TLS/DTLS Transport Security =====
+ * Optional OpenSSL encryption for TCP (TLS 1.2+) and UDP (DTLS 1.2).
+ * Requires OpenSSL >= 1.1.1.
+ * Build with: make DOIP_TLS=1
+ */
+#ifndef DOIP_ENABLE_TLS
+#define DOIP_ENABLE_TLS             false
+#endif
+
+/* ===== ISO-TP Framing (ISO 15765-2) =====
+ * Transparent segmentation/reassembly of UDS payloads at the DoIP
+ * diagnostic message boundary.
+ * Build with: make DOIP_ISOTP=1
+ */
+#ifndef DOIP_ENABLE_ISO_TP
+#define DOIP_ENABLE_ISO_TP          false
+#endif
+
+/* ISO-TP timing and sizing constants */
+#define DOIP_ISOTP_SF_MAX           7U      /* Max data bytes in a Single Frame       */
+#define DOIP_ISOTP_N_BS_MS          1000U   /* Sender wait timeout for FC after FF    */
+#define DOIP_ISOTP_N_CR_MS          1000U   /* Receiver wait timeout for next CF      */
+#define DOIP_ISOTP_STMIN_MS         0U      /* Min separation time between CFs (ms)  */
+
 /* ===== Callback Hooks ===== */
 typedef void (*DoIP_RxIndication)(uint16_t payload_type, const uint8_t *data, uint32_t len);
 typedef void (*DoIP_TxConfirmation)(bool success);
 
-extern DoIP_RxIndication g_doip_rx_cb;
-extern DoIP_TxConfirmation g_doip_tx_cb;
+/* Async TCP-client event hooks (set by doip_api, consumed by doip_tcp) */
+typedef void (*DoIP_ClientConnectCb)   (int client_fd, void *user_ctx);
+typedef void (*DoIP_ClientDisconnectCb)(int client_fd, void *user_ctx);
+typedef int  (*DoIP_FrameReceivedCb)   (int client_fd, uint16_t pt,
+                                         const uint8_t *payload, uint32_t plen,
+                                         void *user_ctx);
+
+extern DoIP_RxIndication        g_doip_rx_cb;
+extern DoIP_TxConfirmation      g_doip_tx_cb;
+extern DoIP_ClientConnectCb     g_doip_client_connect_cb;
+extern DoIP_ClientDisconnectCb  g_doip_client_disconnect_cb;
+extern DoIP_FrameReceivedCb     g_doip_frame_received_cb;
+extern void                    *g_doip_async_user_ctx;
 
 /** @} */ /* end of doip_config group */
 
