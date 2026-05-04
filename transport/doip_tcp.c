@@ -203,15 +203,9 @@ int doip_tcp_poll(DoIP_RxIndication rx_cb) {
         }
     }
 
-    uint32_t now = get_time_ms();
-    for (int i = 0; i < DOIP_MAX_TCP_CLIENTS; i++) {
-        if (g_clients[i].in_use && g_clients[i].state == DOIP_TCP_STATE_ACTIVATED) {
-            if (now - g_clients[i].last_activity_ms > DOIP_ROUTING_ACTIVATION_TIMEOUT_MS) {
-                LOG_WARN(DOIP_LOG_MODULE_TCP, "S3 timeout for client fd=%d", g_clients[i].fd);
-                close_client(&g_clients[i]);
-            }
-        }
-    }
+    /* NOTE: Per-client idle timeout / alive-check disconnection is handled entirely
+     * by doip_tcp_tick(), called from DoIP_Fsm_MainFunction() after this poll.
+     * Do not add a second S3 timeout here — it races with the alive-check probe. */
     return 0;
 }
 
