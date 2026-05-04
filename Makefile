@@ -147,6 +147,74 @@ $(LIB_TEST_EXAMPLE): example/consumer.c $(SHARED_LIB)
 	$(CC) $(CFLAGS) $< -L. -ldoip $(LDFLAGS) -o $@
 
 # =====================================================================
+# Unit + Integration Tests  (Unity framework — vendored in tests/vendor)
+# =====================================================================
+
+# Flags for test binaries: debug symbols, no optimisation, all include paths
+TEST_CFLAGS  = -Wall -Wextra -O0 -g -std=c11 -D_DEFAULT_SOURCE \
+               -I. -Iconfig -Icore -Itransport -Istate \
+               -Itests/vendor/unity -Itests/mocks
+
+TEST_LDFLAGS = -lpthread
+
+# Integration test flag: inject port-override header before doip_config.h
+INT_CFLAGS   = $(TEST_CFLAGS) -include tests/integration/doip_config_test.h
+
+# Production source files compiled into integration test binaries
+PROD_SRCS    = core/doip_frame.c core/doip_log.c core/doip_det.c \
+               doip_api.c \
+               transport/doip_tcp.c transport/doip_udp.c transport/doip_uds.c \
+               state/doip_fsm.c \
+               client/doip_client.c
+
+UNITY_SRC    = tests/vendor/unity/unity.c
+MOCK_FSM_SRC = tests/mocks/mock_fsm.c
+
+# ----- Unit: frame serialisation / deserialisation (no sockets) -----
+test-frame: tests/vendor/unity/unity.c tests/unit/test_frame.c \
+            core/doip_frame.c core/doip_log.c core/doip_det.c
+	$(CC) $(TEST_CFLAGS) -o $@ $^ $(TEST_LDFLAGS)
+
+# ----- Unit: UDS request processing + identity + hook (no sockets) --
+test-uds: $(UNITY_SRC) tests/unit/test_uds.c \
+          transport/doip_uds.c $(MOCK_FSM_SRC) \
+          core/doip_log.c core/doip_det.c
+	$(CC) $(TEST_CFLAGS) -o $@ $^ $(TEST_LDFLAGS)
+
+# ----- Integration: full server lifecycle + TCP/UDP (port 23400) -----
+test-server: $(UNITY_SRC) tests/integration/test_server.c $(PROD_SRCS)
+	$(CC) $(INT_CFLAGS) -o $@ $^ $(TEST_LDFLAGS)
+
+# ----- Integration: server-initiated Alive Check timing (~22 s) ------
+test-alive-bin: $(UNITY_SRC) tests/integration/test_alive_check.c $(PROD_SRCS)
+	$(CC) $(INT_CFLAGS) -o $@ $^ $(TEST_LDFLAGS)
+
+# ----- Runners -------------------------------------------------------
+test-unit: test-frame test-uds
+	@echo ""
+	@echo "=== Unit Tests ==="
+	./test-frame
+	./test-uds
+	@echo "=== Unit Tests Complete ==="
+
+test-integration: test-server
+	@echo ""
+	@echo "=== Integration Tests (port 23400) ==="
+	./test-server
+	@echo "=== Integration Tests Complete ==="
+
+test-alive: test-alive-bin
+	@echo ""
+	@echo "=== Alive Check Tests (~22 s) ==="
+	./test-alive-bin
+	@echo "=== Alive Check Tests Complete ==="
+
+# Fast CI target: unit + integration (< 15 s)
+test: test-unit test-integration
+
+.PHONY: test-unit test-integration test-alive test
+
+# =====================================================================
 # Documentation
 # =====================================================================
 docs:
@@ -160,5 +228,6 @@ clean:
 	rm -f $(CLIENT_OBJS) $(CLIENT_TARGET)
 	rm -f $(LIB_OBJS) $(SHARED_LIB) $(STATIC_LIB) $(SONAME) libdoip.so
 	rm -f $(LIB_TEST_SERVER) $(LIB_TEST_CLIENT) $(LIB_TEST_EXAMPLE)
+	rm -f test-frame test-uds test-server test-alive-bin
 
 .PHONY: all lib test-lib install uninstall docs clean
