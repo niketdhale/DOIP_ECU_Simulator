@@ -28,10 +28,6 @@
 #include <arpa/inet.h>
 #include <errno.h>
 
-/* Required by doip_api.c */
-DoIP_RxIndication   g_doip_rx_cb = NULL;
-DoIP_TxConfirmation g_doip_tx_cb = NULL;
-
 /* ── Server thread ─────────────────────────────────────────────────── */
 
 static DoIP_Handle_t   *g_server        = NULL;

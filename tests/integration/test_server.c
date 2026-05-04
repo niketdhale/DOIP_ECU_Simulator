@@ -31,10 +31,6 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
-/* Globals shared between all tests — reset in setUp/tearDown */
-DoIP_RxIndication   g_doip_rx_cb = NULL;
-DoIP_TxConfirmation g_doip_tx_cb = NULL;
-
 /* ── Server thread ─────────────────────────────────────────────────── */
 
 static DoIP_Handle_t    *g_server        = NULL;
