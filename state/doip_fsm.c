@@ -12,7 +12,10 @@ static uint32_t get_time_ms(void) {
     return (uint32_t)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
 }
 
-int DoIP_Fsm_Init(uint32_t s3_timeout_ms) {
+int DoIP_Fsm_Init(uint32_t s3_timeout_ms, const DoIP_EcuIdentity_t *identity,
+                  int (*uds_request_cb)(uint8_t, const uint8_t*, uint16_t,
+                                        uint8_t*, uint16_t, uint16_t*, void*),
+                  void *user_ctx) {
     g_fsm_ctx.current_state = DOIP_STATE_UNINIT;
     g_fsm_ctx.previous_state = DOIP_STATE_UNINIT;
     g_fsm_ctx.state_entry_time_ms = get_time_ms();
@@ -22,13 +25,13 @@ int DoIP_Fsm_Init(uint32_t s3_timeout_ms) {
     g_fsm_ctx.malformed_packet_count = 0;
     g_fsm_ctx.timeout_violation_count = 0;
 
-    /* Initialize underlying transports */
-    if (doip_udp_init() != 0 || doip_tcp_init() != 0) {
+    /* Initialize underlying transports, threading identity and UDS hook */
+    if (doip_udp_init(identity) != 0 || doip_tcp_init() != 0) {
         LOG_ERROR(DOIP_LOG_MODULE_FSM, "Transport initialization failed");
         g_fsm_ctx.current_state = DOIP_STATE_ERROR;
         return -1;
     }
-    doip_uds_init();
+    doip_uds_init(identity, uds_request_cb, user_ctx);
 
     g_fsm_ctx.current_state = DOIP_STATE_IDLE;
     LOG_INFO(DOIP_LOG_MODULE_FSM, "FSM initialized. S3=%u ms", s3_timeout_ms);
@@ -98,15 +101,16 @@ void DoIP_Fsm_MainFunction(void) {
         return;
     }
 
-    /* 1. Non-blocking transport polling */
+    /* 1. Non-blocking transport polling + alive check tick */
+    uint32_t now = get_time_ms();
     doip_udp_poll(NULL);
     doip_tcp_poll(NULL);
+    doip_tcp_tick(now);
 
     /* 2. S3 Server Timeout Enforcement (Negative Scenario: Session expiration) */
-    if (g_fsm_ctx.current_state == DOIP_STATE_DIAG_SESSION || 
+    if (g_fsm_ctx.current_state == DOIP_STATE_DIAG_SESSION ||
         g_fsm_ctx.current_state == DOIP_STATE_ROUTING_ACTIVE) {
-        
-        uint32_t now = get_time_ms();
+
         if ((now - g_fsm_ctx.state_entry_time_ms) > g_fsm_ctx.s3_server_timeout_ms) {
             g_fsm_ctx.timeout_violation_count++;
             LOG_WARN(DOIP_LOG_MODULE_FSM, "S3 Server timeout expired (Violations: %u)",

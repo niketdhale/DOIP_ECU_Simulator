@@ -69,6 +69,12 @@
    Set to 0 to disable, or 5 to send exactly 5 times then stop. */
 #define DOIP_ANNOUNCE_COUNT_MAX        5
 
+/* ===== Alive Check Timing ===== */
+/* How long an ACTIVATED client can be idle before the server sends an Alive Check Request */
+#define DOIP_ALIVE_CHECK_INTERVAL_MS    5000U
+/* If no Alive Check Response is received within this window the client is disconnected */
+#define DOIP_ALIVE_CHECK_TIMEOUT_MS     2000U
+
 /* ===== Feature Toggles ===== */
 #define DOIP_DEV_ERROR_DETECT       false
 #define DOIP_SUPPORT_VIN_REQUEST    true

@@ -5,6 +5,12 @@
 #include <stdio.h>
 #include <time.h>
 
+/* Runtime ECU identity and optional UDS request hook */
+static DoIP_EcuIdentity_t g_identity;
+static int (*g_uds_request_cb)(uint8_t, const uint8_t*, uint16_t,
+                                uint8_t*, uint16_t, uint16_t*, void*) = NULL;
+static void *g_uds_user_ctx = NULL;
+
 static uint32_t get_time_ms(void) {
     struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint32_t)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
@@ -48,10 +54,29 @@ static int handle_read_data_by_id(UdsClientContext_t *ctx, const uint8_t *req, u
 
     res[0] = UDS_SID_READ_DATA_BY_ID_RES; res[1] = req[1]; res[2] = req[2];
     switch (did) {
-        case UDS_DID_VIN_NUMBER: { memcpy(&res[3], "WBAXXXXXXXXXXXXXX", 17); *res_len = 20; break; }
-        case UDS_DID_SYSTEM_NAME: { const char *n = "DoIP ECU Simulator"; memcpy(&res[3], n, strlen(n)); *res_len = 3 + strlen(n); break; }
-        case UDS_DID_SOFTWARE_VERSION: { const char *s = "V1.0.0"; memcpy(&res[3], s, strlen(s)); *res_len = 3 + strlen(s); break; }
-        case UDS_DID_ECU_SERIAL_NUMBER: { const char *sn = "ECU123456789"; memcpy(&res[3], sn, strlen(sn)); *res_len = 3 + strlen(sn); break; }
+        case UDS_DID_VIN_NUMBER: {
+            memcpy(&res[3], g_identity.vin, DOIP_VIN_LENGTH);
+            *res_len = 3 + DOIP_VIN_LENGTH;
+            break;
+        }
+        case UDS_DID_SYSTEM_NAME: {
+            size_t n = strlen(g_identity.system_name);
+            memcpy(&res[3], g_identity.system_name, n);
+            *res_len = (uint16_t)(3 + n);
+            break;
+        }
+        case UDS_DID_SOFTWARE_VERSION: {
+            size_t n = strlen(g_identity.software_version);
+            memcpy(&res[3], g_identity.software_version, n);
+            *res_len = (uint16_t)(3 + n);
+            break;
+        }
+        case UDS_DID_ECU_SERIAL_NUMBER: {
+            size_t n = strlen(g_identity.serial_number);
+            memcpy(&res[3], g_identity.serial_number, n);
+            *res_len = (uint16_t)(3 + n);
+            break;
+        }
         default: res[0] = 0x7F; res[1] = UDS_SID_READ_DATA_BY_ID; res[2] = UDS_NRC_REQUEST_OUT_OF_RANGE; *res_len = 3; return -1;
     }
     return 0;
@@ -109,13 +134,34 @@ static const struct { uint8_t sid; uint8_t res_id; int (*handler)(UdsClientConte
     { 0x00, 0x00, NULL, false }
 };
 
-int doip_uds_init(void) { LOG_INFO(DOIP_LOG_MODULE_UDS, "UDS module initialized (per-client state)"); return 0; }
+int doip_uds_init(const DoIP_EcuIdentity_t *identity,
+                  int (*uds_request_cb)(uint8_t, const uint8_t*, uint16_t,
+                                        uint8_t*, uint16_t, uint16_t*, void*),
+                  void *user_ctx) {
+    if (identity) g_identity = *identity;
+    g_uds_request_cb = uds_request_cb;
+    g_uds_user_ctx   = user_ctx;
+    LOG_INFO(DOIP_LOG_MODULE_UDS, "UDS module initialized (per-client state)");
+    return 0;
+}
 
 int doip_uds_process_request(UdsClientContext_t *ctx, const uint8_t *req_data, uint16_t req_len, uint8_t *res_data, uint16_t *res_len) {
     if (!ctx || !req_data || !res_data || !res_len || req_len == 0) return -1;
 
     uint8_t sid = req_data[0];
     LOG_DEBUG(DOIP_LOG_MODULE_UDS, "<<< SID: 0x%02X (Len=%u)", sid, req_len);
+
+    /* 1. Runtime hook — caller can serve NVM / sensor / DTC data directly */
+    if (g_uds_request_cb) {
+        uint16_t cb_len = 0;
+        if (g_uds_request_cb(sid, req_data, req_len,
+                             res_data, DOIP_MAX_PAYLOAD_SIZE, &cb_len,
+                             g_uds_user_ctx) == 0) {
+            *res_len = cb_len;
+            LOG_DEBUG(DOIP_LOG_MODULE_UDS, ">>> SID: 0x%02X handled by runtime hook", sid);
+            return 0;
+        }
+    }
 
     /* Check Support List */
     bool supported = false;

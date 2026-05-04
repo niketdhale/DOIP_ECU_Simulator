@@ -6,7 +6,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-int doip_udp_init(void);
+int doip_udp_init(const DoIP_EcuIdentity_t *identity);
 int doip_udp_poll(DoIP_RxIndication rx_cb);
 void doip_udp_deinit(void);
 

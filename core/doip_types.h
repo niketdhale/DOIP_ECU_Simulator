@@ -36,6 +36,10 @@ typedef enum {
     DOIP_PT_ROUTING_ACT_RES       = 0x0006,  /* TCP: Routing Activation Response */
     DOIP_PT_ALIVE_CHECK_REQ       = 0x0007,  /* TCP: Alive Check */
     DOIP_PT_ALIVE_CHECK_RES       = 0x0008,  /* TCP: Alive Check Response */
+    DOIP_PT_ENTITY_STATUS_REQ     = 0x4001,  /* UDP: Entity Status Request */
+    DOIP_PT_ENTITY_STATUS_RES     = 0x4002,  /* UDP: Entity Status Response */
+    DOIP_PT_POWER_MODE_REQ        = 0x4003,  /* UDP: Diagnostic Power Mode Request */
+    DOIP_PT_POWER_MODE_RES        = 0x4004,  /* UDP: Diagnostic Power Mode Response */
     DOIP_PT_DIAGNOSTIC_MSG        = 0x8001,  /* Diagnostic Message (Req & Res) */
     DOIP_PT_DIAGNOSTIC_ACK        = 0x8002,  /* Diagnostic Message ACK */
 } doip_payload_type_t;
@@ -68,6 +72,38 @@ typedef struct __attribute__((packed)) {
     uint32_t further_action;     /* Bitmask: 0x01=Routing activation required */
     uint16_t vin_sync_status;    /* 0x0010=VIN/GID/EID synchronized */
 } doip_vehicle_announce_t;
+
+/* ===== Entity Status Response (ISO 13400-2 Table 38) ===== */
+typedef struct __attribute__((packed)) {
+    uint8_t  node_type;           /* 0x00=DoIP gateway, 0x01=DoIP node */
+    uint8_t  max_open_sockets;    /* Maximum concurrent TCP sockets     */
+    uint8_t  curr_open_sockets;   /* Currently active TCP sockets       */
+    uint32_t max_data_size;       /* Max diagnostic payload (big-endian) */
+} doip_entity_status_res_t;
+
+/* ===== Diagnostic Power Mode Response (ISO 13400-2 Table 40) ===== */
+typedef struct __attribute__((packed)) {
+    uint8_t power_mode;           /* 0x00=not ready, 0x01=ready, 0x02=not supported */
+} doip_power_mode_res_t;
+
+/* ===== Runtime ECU Identity ===== */
+/**
+ * @brief Configurable ECU identity data.
+ *
+ * All fields that were previously hardcoded in the transport layer.
+ * Populate and pass via DoIP_Config_t::ecu_identity at DoIP_Init() time.
+ * NULL fields or a NULL pointer causes built-in defaults to be used.
+ */
+typedef struct {
+    char    vin[DOIP_VIN_LENGTH + 1]; /**< 17-char VIN, NUL-terminated (default "WBAXXXXXXXXXXXXXX") */
+    char    software_version[32];      /**< SW version string (default "V1.0.0")                      */
+    char    system_name[64];           /**< ECU name string (default "DoIP ECU Simulator")             */
+    char    serial_number[32];         /**< Serial number string (default "ECU123456789")              */
+    uint8_t eid[DOIP_EID_LENGTH];     /**< Entity ID, 6 bytes (default 0xAA…)                        */
+    uint8_t gid[DOIP_GID_LENGTH];     /**< Group ID, 6 bytes (default 0xBB…)                         */
+    uint8_t further_action;            /**< Further action byte (default 0x00 = none required)        */
+    uint8_t vin_gw_sync_status;       /**< VIN/GW sync status (default 0x00 = synchronized)          */
+} DoIP_EcuIdentity_t;
 
 /** @} */ /* end of doip_types group */
 

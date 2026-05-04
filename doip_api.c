@@ -14,8 +14,21 @@ DoIP_RxIndication   g_doip_rx_cb = NULL;
 DoIP_TxConfirmation g_doip_tx_cb = NULL;
 
 struct DoIP_Context {
-    DoIP_Config_t config;
-    bool          is_initialized;
+    DoIP_Config_t    config;
+    DoIP_EcuIdentity_t identity;   /* Resolved copy — defaults filled in DoIP_Init() */
+    bool             is_initialized;
+};
+
+/* Built-in default ECU identity (mirrors the previously hardcoded values) */
+static const DoIP_EcuIdentity_t g_default_identity = {
+    .vin              = "WBAXXXXXXXXXXXXXX",
+    .software_version = "V1.0.0",
+    .system_name      = "DoIP ECU Simulator",
+    .serial_number    = "ECU123456789",
+    .eid              = { 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA },
+    .gid              = { 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB },
+    .further_action   = 0x00,
+    .vin_gw_sync_status = 0x00,
 };
 
 /*  Thread Safety: Single API-level mutex */
@@ -23,7 +36,8 @@ static pthread_mutex_t g_api_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static const DoIP_Config_t g_default_config = {
     .log_level = DOIP_LOG_LEVEL_INFO, .log_file_path = NULL, .s3_server_timeout_ms = 5000,
-    .on_state_change = NULL, .on_rx_message = NULL, .user_context = NULL
+    .on_state_change = NULL, .on_rx_message = NULL, .user_context = NULL,
+    .ecu_identity = NULL, .on_uds_request = NULL
 };
 
 static int DoIP_Config_Validate(void) {
@@ -65,12 +79,22 @@ int DoIP_Init(DoIP_Handle_t *handle, const DoIP_Config_t *config) {
         if (config->on_state_change) handle->config.on_state_change = config->on_state_change;
         if (config->on_rx_message) handle->config.on_rx_message = config->on_rx_message;
         if (config->user_context) handle->config.user_context = config->user_context;
+        if (config->on_uds_request) handle->config.on_uds_request = config->on_uds_request;
     }
+
+    /* Resolve ECU identity: use caller-supplied struct or built-in defaults */
+    if (config && config->ecu_identity)
+        handle->identity = *config->ecu_identity;
+    else
+        handle->identity = g_default_identity;
 
     if (DoIP_Log_Init(handle->config.log_level, DOIP_LOG_MODULE_ALL, handle->config.log_file_path) != 0) { ret = -2; goto unlock; }
     LOG_INFO(DOIP_LOG_MODULE_CORE, "DoIP API: Initializing with S3=%u ms", handle->config.s3_server_timeout_ms);
     if (DoIP_Config_Validate() != 0) { LOG_ERROR(DOIP_LOG_MODULE_CORE, "Config validation failed"); DoIP_Log_DeInit(); ret = -3; goto unlock; }
-    if (DoIP_Fsm_Init(handle->config.s3_server_timeout_ms) != 0) { LOG_ERROR(DOIP_LOG_MODULE_CORE, "FSM init failed"); DoIP_Log_DeInit(); ret = -4; goto unlock; }
+    if (DoIP_Fsm_Init(handle->config.s3_server_timeout_ms, &handle->identity,
+                      handle->config.on_uds_request, handle->config.user_context) != 0) {
+        LOG_ERROR(DOIP_LOG_MODULE_CORE, "FSM init failed"); DoIP_Log_DeInit(); ret = -4; goto unlock;
+    }
 
     handle->is_initialized = true;
 unlock:

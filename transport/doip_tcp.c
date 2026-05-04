@@ -49,10 +49,13 @@ static int process_client_frame(doip_client_t *client) {
 
     doip_header_t hdr;
     if (doip_deserialize_header(rx_buf, n, &hdr) < 0) {
-        LOG_WARN(DOIP_LOG_MODULE_TCP, "Invalid header from client fd=%d", client->fd);
+        LOG_WARN(DOIP_LOG_MODULE_TCP, "Invalid header from client fd=%d — sending NACK", client->fd);
+        uint8_t nack = (uint8_t)DOIP_NACK_INVALID_PATTERN;
+        doip_send_frame(client->fd, DOIP_PT_GENERIC_NACK, &nack, 1);
         return -1;
     }
     client->last_activity_ms = get_time_ms();
+    client->alive_check_sent_ms = 0;  /* Any valid frame resets pending alive check */
 
     if (hdr.payload_length > 0) {
         if (hdr.payload_length > DOIP_MAX_PAYLOAD_SIZE) { LOG_WARN(DOIP_LOG_MODULE_TCP, "Payload too large"); return -1; }
@@ -128,9 +131,22 @@ static int process_client_frame(doip_client_t *client) {
             break;
         }
         case DOIP_PT_ALIVE_CHECK_REQ:
+            /* Client probing us — respond immediately */
             doip_send_frame(client->fd, DOIP_PT_ALIVE_CHECK_RES, NULL, 0);
             break;
-        default: break;
+        case DOIP_PT_ALIVE_CHECK_RES:
+            /* Client responded to our server-initiated probe — clear pending flag */
+            client->alive_check_sent_ms = 0;
+            LOG_DEBUG(DOIP_LOG_MODULE_TCP, "Alive Check response from fd=%d", client->fd);
+            break;
+        default: {
+            /* Unknown payload type — send Generic Header NACK (ISO 13400-2 §7.2) */
+            uint8_t nack = (uint8_t)DOIP_NACK_UNKNOWN_PT;
+            doip_send_frame(client->fd, DOIP_PT_GENERIC_NACK, &nack, 1);
+            LOG_WARN(DOIP_LOG_MODULE_TCP, "Unknown PT=0x%04X from fd=%d — NACK sent",
+                     hdr.payload_type, client->fd);
+            break;
+        }
     }
     return 0;
 }
@@ -197,6 +213,36 @@ int doip_tcp_poll(DoIP_RxIndication rx_cb) {
         }
     }
     return 0;
+}
+
+void doip_tcp_tick(uint32_t now_ms) {
+    for (int i = 0; i < DOIP_MAX_TCP_CLIENTS; i++) {
+        doip_client_t *c = &g_clients[i];
+        if (!c->in_use || c->state != DOIP_TCP_STATE_ACTIVATED) continue;
+
+        if (c->alive_check_sent_ms != 0) {
+            /* Alive Check already pending — check for timeout */
+            if ((now_ms - c->alive_check_sent_ms) > DOIP_ALIVE_CHECK_TIMEOUT_MS) {
+                LOG_WARN(DOIP_LOG_MODULE_TCP,
+                         "Alive Check timeout for fd=%d — disconnecting", c->fd);
+                close_client(c);
+            }
+        } else if ((now_ms - c->last_activity_ms) > DOIP_ALIVE_CHECK_INTERVAL_MS) {
+            /* Client idle too long — send an Alive Check Request */
+            if (doip_send_frame(c->fd, DOIP_PT_ALIVE_CHECK_REQ, NULL, 0) == 0) {
+                c->alive_check_sent_ms = now_ms;
+                LOG_DEBUG(DOIP_LOG_MODULE_TCP,
+                          "Alive Check Request sent to fd=%d", c->fd);
+            }
+        }
+    }
+}
+
+uint8_t doip_tcp_get_client_count(void) {
+    uint8_t count = 0;
+    for (int i = 0; i < DOIP_MAX_TCP_CLIENTS; i++)
+        if (g_clients[i].in_use) count++;
+    return count;
 }
 
 void doip_tcp_deinit(void) {

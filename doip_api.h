@@ -16,6 +16,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "include/doip_version.h"
+#include "core/doip_types.h"
 
 /**
  * @brief Opaque handle for the DoIP Simulator instance.
@@ -64,6 +65,36 @@ typedef struct {
     void (*on_rx_message)(uint16_t payload_type, const uint8_t *data, uint32_t len, void *user_ctx);
 
     void *user_context;           /**< Opaque user data forwarded to all callbacks */
+
+    /**
+     * @brief ECU identity data (VIN, SW version, serial number, EID, GID).
+     *
+     * Set to a populated DoIP_EcuIdentity_t to override the built-in defaults.
+     * NULL uses the compiled-in defaults ("WBAXXXXXXXXXXXXXX", "V1.0.0", etc.).
+     * The pointed-to struct is copied internally during DoIP_Init().
+     */
+    const DoIP_EcuIdentity_t *ecu_identity;
+
+    /**
+     * @brief Runtime UDS request hook — called before built-in service handlers.
+     *
+     * Use this to serve DID / DTC data from NVM, live sensors, or any dynamic
+     * source.  The hook is called for every incoming UDS request.
+     *
+     * @param[in]  sid           UDS Service ID (e.g. 0x22 = ReadDataByIdentifier).
+     * @param[in]  req           Full UDS request bytes (SID + parameters).
+     * @param[in]  req_len       Length of @p req.
+     * @param[out] resp          Buffer for the positive UDS response (SID|0x40 + data).
+     * @param[in]  resp_size     Size of @p resp buffer.
+     * @param[out] resp_len_out  Set to the number of bytes written into @p resp.
+     * @param[in]  user_ctx      Pointer from DoIP_Config_t::user_context.
+     * @retval  0   Request handled — use @p resp directly, skip built-in handler.
+     * @retval -1   Not handled — fall through to built-in handler.
+     */
+    int (*on_uds_request)(uint8_t sid,
+                          const uint8_t *req, uint16_t req_len,
+                          uint8_t *resp, uint16_t resp_size, uint16_t *resp_len_out,
+                          void *user_ctx);
 } DoIP_Config_t;
 
 /* ===== Lifecycle API ===== */

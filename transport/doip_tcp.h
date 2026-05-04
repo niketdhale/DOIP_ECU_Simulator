@@ -35,7 +35,8 @@ typedef struct {
     doip_tcp_state_t    state;
     doip_logical_addr_t tester_logical_addr;
     uint32_t            last_activity_ms;
-    UdsClientContext_t  uds_ctx;   /*  Per-Client UDS State */
+    uint32_t            alive_check_sent_ms;  /* Non-zero while an Alive Check Req is pending */
+    UdsClientContext_t  uds_ctx;   /* Per-Client UDS State */
     bool                in_use;
 } doip_client_t;
 
@@ -43,6 +44,8 @@ typedef struct {
 
 int doip_tcp_init(void);
 int doip_tcp_poll(DoIP_RxIndication rx_cb);
+void doip_tcp_tick(uint32_t now_ms);      /* Server-initiated Alive Check + timeout */
+uint8_t doip_tcp_get_client_count(void);  /* Count of currently active clients       */
 void doip_tcp_deinit(void);
 
 #endif /* DOIP_TCP_H */

@@ -9,10 +9,15 @@ A C implementation of the **Diagnostic over Internet Protocol (DoIP)** stack for
 - **DoIP Server (ECU Simulator)**
   - UDP Vehicle Announcement broadcasts (periodic, configurable count)
   - UDP VIN/EID request handling
+  - UDP Entity Status (PT 0x4001) and Diagnostic Power Mode (PT 0x4003) responses — ISO 13400-2 conformance
   - TCP routing activation with multi-client support (up to 5 simultaneous testers)
+  - Generic Header NACK (PT 0x0000) sent on malformed or unknown frames — ISO 13400-2 §7.2
+  - Server-initiated Alive Check (PT 0x0007) with configurable interval and disconnect-on-timeout
   - UDS diagnostic message forwarding (ISO 14229) with per-client session state
   - S3 server session timeout enforcement
   - AUTOSAR-aligned finite state machine (FSM)
+  - **Runtime-configurable ECU identity** — VIN, SW version, serial number, system name, EID, GID set via `DoIP_EcuIdentity_t` at init time (no recompile needed)
+  - **Runtime UDS callback hook** (`on_uds_request`) — supply live NVM/sensor data before the built-in service table is consulted
 
 - **DoIP Client Library**
   - UDP vehicle discovery (broadcast or unicast)
@@ -331,15 +336,105 @@ All configuration is in the `config/` headers — no runtime config files needed
 #define DOIP_ANNOUNCE_COUNT_MAX         5       // send 5 then stop
 #define DOIP_RX_TIMEOUT_MS              2000U
 #define DOIP_ROUTING_ACTIVATION_TIMEOUT_MS  5000U
+
+/* Server-initiated Alive Check (ISO 13400-2) */
+#define DOIP_ALIVE_CHECK_INTERVAL_MS    5000U   // probe idle client after 5 s
+#define DOIP_ALIVE_CHECK_TIMEOUT_MS     2000U   // disconnect if no reply within 2 s
 ```
 
 ---
 
 ## Configuring UDS Request / Response
 
-UDS behaviour in the simulator is controlled at three levels:
+UDS behaviour in the simulator is controlled at four levels — from runtime (no recompile) down to compile-time toggles.
 
-### 1. Enable / disable services — `config/doip_uds_config.h`
+### 1. Runtime ECU identity — `DoIP_EcuIdentity_t`
+
+Pass a populated identity struct to `DoIP_Init()` to set the values returned for VIN, software version, system name, serial number, EID, and GID without recompiling.
+
+```c
+DoIP_EcuIdentity_t identity = {0};
+strncpy(identity.vin,              "MYVIN00000000001", DOIP_VIN_LENGTH);
+strncpy(identity.software_version, "V2.5.0",          sizeof(identity.software_version) - 1);
+strncpy(identity.system_name,      "My ECU Node",     sizeof(identity.system_name) - 1);
+strncpy(identity.serial_number,    "SN-98765",        sizeof(identity.serial_number) - 1);
+memset(identity.eid, 0x11, DOIP_EID_LENGTH);   /* 6-byte Entity ID */
+memset(identity.gid, 0x22, DOIP_GID_LENGTH);   /* 6-byte Group ID  */
+identity.further_action    = 0x00;              /* no further action required */
+identity.vin_gw_sync_status = 0x00;             /* VIN/GW synchronized       */
+
+DoIP_Config_t config = {0};
+config.ecu_identity = &identity;
+DoIP_Init(handle, &config);
+```
+
+If `ecu_identity` is `NULL`, the simulator falls back to the compile-time defaults in `doip_api.c`.
+
+The identity is used in:
+- **UDP responses** — VIN/EID/GID in Vehicle Announcement and VIN Request responses
+- **UDS DID 0xF190** — VIN Number
+- **UDS DID 0xF189** — Software Version
+- **UDS DID 0xF197** — System Name
+- **UDS DID 0xF18C** — ECU Serial Number
+
+### 2. Runtime UDS hook — `on_uds_request`
+
+Register a callback to intercept any UDS request before the built-in service table handles it. Return `0` to supply your own response, or `-1` to fall through to the built-in handler. This enables serving live data from NVM, sensors, or a DTC memory at runtime.
+
+```c
+/* Dispatch model:
+ *
+ *  Incoming UDS request
+ *       |
+ *       v
+ *  on_uds_request callback (if set)
+ *       |
+ *  returns 0? ──> use callback response        (done)
+ *       |
+ *  returns -1
+ *       |
+ *       v
+ *  built-in service table (session control, read DID, tester present…)
+ *       |
+ *  handled? ──> built-in response              (done)
+ *       |
+ *  not handled
+ *       |
+ *       v
+ *  auto-respond (SID|0x40) or NRC per UDS_SIMULATOR_AUTO_RESPOND
+ */
+static int my_uds_hook(uint8_t sid,
+                       const uint8_t *req, uint16_t req_len,
+                       uint8_t *resp, uint16_t resp_size, uint16_t *resp_len_out,
+                       void *ctx)
+{
+    (void)ctx; (void)resp_size;
+
+    if (sid == UDS_SID_READ_DATA_BY_ID && req_len >= 3) {
+        uint16_t did = ((uint16_t)req[1] << 8) | req[2];
+
+        if (did == 0xA001) {                /* custom: odometer from NVM */
+            uint32_t odo = nvm_read_odometer();
+            resp[0] = UDS_SID_READ_DATA_BY_ID_RES;
+            resp[1] = 0xA0; resp[2] = 0x01;
+            resp[3] = (odo >> 16) & 0xFF;
+            resp[4] = (odo >>  8) & 0xFF;
+            resp[5] =  odo        & 0xFF;
+            *resp_len_out = 6;
+            return 0;   /* handled */
+        }
+    }
+    return -1;  /* not handled — use built-in */
+}
+
+DoIP_Config_t config = {0};
+config.ecu_identity   = &identity;
+config.on_uds_request = my_uds_hook;
+config.user_context   = &my_nvm_handle;
+DoIP_Init(handle, &config);
+```
+
+### 3. Enable / disable services — `config/doip_uds_config.h`
 
 Each UDS service can be compiled in or out with a toggle macro:
 
@@ -363,61 +458,13 @@ The list of SIDs that the server claims to support (sent back in NRC responses) 
 
 If a client sends a SID not in this list the server returns NRC `0x11` (serviceNotSupported).
 
-### 2. Customise response data — `transport/doip_uds.c`
-
-Each service has a dedicated handler function in the dispatch table. Edit the handler to change what data is returned.
-
-**Example — add a new DID to `handle_read_data_by_id`:**
-
-```c
-/* transport/doip_uds.c — inside handle_read_data_by_id() */
-switch (did) {
-    case UDS_DID_VIN_NUMBER:
-        memcpy(&res[3], "MYVIN00000000001", 17);   /* <- change VIN here */
-        *res_len = 20;
-        break;
-
-    case UDS_DID_SOFTWARE_VERSION:
-        memcpy(&res[3], "V2.3.1", 6);              /* <- change SW version */
-        *res_len = 3 + 6;
-        break;
-
-    case 0xF199:                                    /* <- add a new DID */
-        memcpy(&res[3], "2024-12-01", 10);
-        *res_len = 3 + 10;
-        break;
-
-    default:
-        res[0] = 0x7F; res[1] = UDS_SID_READ_DATA_BY_ID;
-        res[2] = UDS_NRC_REQUEST_OUT_OF_RANGE;
-        *res_len = 3;
-        return -1;
-}
-```
-
-Add corresponding DID constant in `config/doip_uds_config.h`:
-
-```c
-#define UDS_DID_PRODUCTION_DATE     0xF199U
-```
-
-### 3. Auto-respond to unhandled services — `UDS_SIMULATOR_AUTO_RESPOND`
-
-When a SID is in the supported list but has no explicit handler, the auto-respond fallback returns a positive response by mirroring the request with `SID | 0x40`:
+### 4. Auto-respond and timing parameters
 
 ```c
 /* config/doip_uds_config.h */
-#define UDS_SIMULATOR_AUTO_RESPOND  1   /* 1 = echo positive response; 0 = return NRC */
-```
-
-Set to `0` if you want unsupported sub-functions to return a NRC instead.
-
-### 4. Session and timing parameters
-
-```c
-/* config/doip_uds_config.h */
-#define UDS_S3_SERVER_MS            5000U   /* S3 server session timeout (ms) */
-#define UDS_P2_SERVER_MS            50U     /* P2 response time (ms) */
+#define UDS_SIMULATOR_AUTO_RESPOND    1      /* 1 = echo SID|0x40; 0 = return NRC */
+#define UDS_S3_SERVER_MS           5000U     /* S3 server session timeout (ms) */
+#define UDS_P2_SERVER_MS             50U     /* P2 response time (ms) */
 
 /* Session type flags */
 #define UDS_ECU_SUPPORTS_DEFAULT      1
@@ -425,7 +472,59 @@ Set to `0` if you want unsupported sub-functions to return a NRC instead.
 #define UDS_ECU_SUPPORTS_PROGRAMMING  0     /* set to 1 to allow programming session */
 ```
 
-Per-client session state (`UdsClientContext_t`) is maintained automatically by the server — each TCP connection gets its own context tracking the active session, last activity timestamp, and security state.
+Per-client session state (`UdsClientContext_t`) is maintained automatically — each TCP connection gets its own context tracking the active session, last activity timestamp, and security state.
+
+---
+
+## Protocol Compliance (ISO 13400-2)
+
+The following ISO 13400-2 server behaviours are implemented for conformance testing compatibility.
+
+### Generic Header NACK (PT 0x0000)
+
+The server sends a Generic NACK when it receives an unrecognised or malformed frame, rather than silently dropping it.
+
+| Condition | NACK code |
+|-----------|-----------|
+| Invalid sync pattern in header | `0x00` (INVALID_PATTERN) |
+| Unknown payload type | `0x01` (UNKNOWN_PAYLOAD_TYPE) |
+
+### Entity Status Response (PT 0x4002)
+
+Send a UDP request with payload type `0x4001` to query server capacity:
+
+```
+Request:  PT=0x4001, payload length=0
+Response: PT=0x4002
+  [0]    node_type          0x01 = DoIP node
+  [1]    max_open_sockets   DOIP_MAX_TCP_CLIENTS (default: 5)
+  [2]    curr_open_sockets  number of currently connected TCP clients
+  [3-6]  max_data_size      DOIP_MAX_PAYLOAD_SIZE in big-endian
+```
+
+### Diagnostic Power Mode Response (PT 0x4004)
+
+Send a UDP request with payload type `0x4003`:
+
+```
+Request:  PT=0x4003, payload length=0
+Response: PT=0x4004
+  [0]    power_mode   0x01 = ready for diagnostics
+```
+
+### Server-initiated Alive Check (PT 0x0007)
+
+The server monitors ACTIVATED TCP clients for inactivity. After `DOIP_ALIVE_CHECK_INTERVAL_MS` (default 5 s) with no frames received from a client, the server sends an Alive Check Request (PT 0x0007, empty payload). If the client does not respond with PT 0x0008 within `DOIP_ALIVE_CHECK_TIMEOUT_MS` (default 2 s), the connection is closed.
+
+```
+Timeline for idle client:
+
+  t=0s   Client activates routing
+  t=5s   Server sends PT=0x0007 (Alive Check Request)
+  t=7s   No response → server closes client connection
+```
+
+These timing constants can be adjusted in `config/doip_config.h`.
 
 ---
 

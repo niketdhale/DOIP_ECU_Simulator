@@ -3,6 +3,7 @@
 
 #include "config/doip_config.h"
 #include "core/doip_log.h"
+#include "core/doip_types.h"
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -32,10 +33,16 @@ typedef struct {
 
 /**
  * @brief Initialize FSM, transports, and UDS modules
- * @param s3_timeout_ms S3 Server timeout in milliseconds
+ * @param s3_timeout_ms  S3 Server timeout in milliseconds
+ * @param identity       ECU identity (VIN, EID, GID, strings) — must not be NULL
+ * @param uds_request_cb Optional runtime UDS hook (NULL = use only built-in handlers)
+ * @param user_ctx       Forwarded to uds_request_cb
  * @return 0 on success, -1 on fatal error
  */
-int DoIP_Fsm_Init(uint32_t s3_timeout_ms);
+int DoIP_Fsm_Init(uint32_t s3_timeout_ms, const DoIP_EcuIdentity_t *identity,
+                  int (*uds_request_cb)(uint8_t, const uint8_t*, uint16_t,
+                                        uint8_t*, uint16_t, uint16_t*, void*),
+                  void *user_ctx);
 
 /**
  * @brief Deinitialize all modules and reset state

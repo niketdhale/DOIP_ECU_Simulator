@@ -2,6 +2,7 @@
 #define DOIP_UDS_H
 
 #include "config/doip_uds_config.h"
+#include "core/doip_types.h"
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -21,7 +22,10 @@ typedef struct {
 } UdsClientContext_t;
 
 /* API: Stateless (Context is passed by caller) */
-int doip_uds_init(void);
+int doip_uds_init(const DoIP_EcuIdentity_t *identity,
+                  int (*uds_request_cb)(uint8_t, const uint8_t*, uint16_t,
+                                        uint8_t*, uint16_t, uint16_t*, void*),
+                  void *user_ctx);
 int doip_uds_process_request(UdsClientContext_t *ctx, const uint8_t *req_data, uint16_t req_len, uint8_t *res_data, uint16_t *res_len);
 void doip_uds_update_activity(UdsClientContext_t *ctx);
 bool doip_uds_is_session_active(const UdsClientContext_t *ctx, uint32_t timeout_ms);
