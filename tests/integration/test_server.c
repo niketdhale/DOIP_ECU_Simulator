@@ -21,6 +21,7 @@
 #include "core/doip_frame.h"
 #include "core/doip_types.h"
 #include "config/doip_uds_config.h"
+#include "transport/doip_tcp.h"   /* DOIP_MAX_TCP_CLIENTS */
 
 #include <stdio.h>
 #include <string.h>
