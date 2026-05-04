@@ -32,14 +32,23 @@ static void fill_announce(doip_vehicle_announce_t *a) {
     a->vin_sync_status = htons((uint16_t)g_identity.vin_gw_sync_status);
 }
 
-static int udp_send_payload(uint16_t ptype, const void *payload, uint32_t plen) {
-    if (g_udp_sock < 0 || (plen > 0 && !payload) || plen > DOIP_MAX_PAYLOAD_SIZE) return -1;
+/** Send a DoIP UDP frame to a specific destination address. */
+static int udp_send_to_addr(uint16_t ptype, const void *payload, uint32_t plen,
+                             const struct sockaddr_in *dst)
+{
+    if (g_udp_sock < 0 || (plen > 0 && !payload) || plen > DOIP_MAX_PAYLOAD_SIZE || !dst) return -1;
     uint8_t tx_buf[DOIP_HEADER_SIZE + DOIP_MAX_PAYLOAD_SIZE];
     doip_header_t hdr = { .protocol_version = DOIP_PROTOCOL_VERSION, .inverse_version = DOIP_INVERSE_VERSION, .payload_type = ptype, .payload_length = plen };
     if (doip_serialize_header(&hdr, tx_buf, sizeof(tx_buf)) < 0) return -1;
     if (plen > 0) memcpy(tx_buf + DOIP_HEADER_SIZE, payload, plen);
-    ssize_t sent = sendto(g_udp_sock, tx_buf, DOIP_HEADER_SIZE + plen, 0, (struct sockaddr*)&g_multicast_addr, sizeof(g_multicast_addr));
+    ssize_t sent = sendto(g_udp_sock, tx_buf, DOIP_HEADER_SIZE + plen, 0,
+                          (const struct sockaddr*)dst, sizeof(*dst));
     return (sent == (ssize_t)(DOIP_HEADER_SIZE + plen)) ? 0 : -1;
+}
+
+/** Send a DoIP UDP frame to the multicast group (for announcements). */
+static int udp_send_payload(uint16_t ptype, const void *payload, uint32_t plen) {
+    return udp_send_to_addr(ptype, payload, plen, &g_multicast_addr);
 }
 
 int doip_udp_init(const DoIP_EcuIdentity_t *identity) {
@@ -92,28 +101,28 @@ int doip_udp_poll(DoIP_RxIndication rx_cb) {
     if (rx_cb) rx_cb(hdr.payload_type, rx_buf + DOIP_HEADER_SIZE, hdr.payload_length);
     
     if (hdr.payload_type == DOIP_PT_VIN_REQ || hdr.payload_type == DOIP_PT_EID_REQ) {
-        /* VIN / EID Request — respond with vehicle announcement data */
+        /* VIN / EID Request — respond unicast to requester (ISO 13400-2 §7.2) */
         LOG_DEBUG(DOIP_LOG_MODULE_UDP, "Handling VIN/EID Request");
         doip_vehicle_announce_t resp;
         fill_announce(&resp);
-        udp_send_payload(DOIP_PT_VIN_RES, &resp, sizeof(resp));
+        udp_send_to_addr(DOIP_PT_VIN_RES, &resp, sizeof(resp), &src_addr);
 
     } else if (hdr.payload_type == DOIP_PT_ENTITY_STATUS_REQ) {
-        /* Entity Status Request (ISO 13400-2 §7.6) */
+        /* Entity Status Request — respond unicast (ISO 13400-2 §7.6) */
         LOG_DEBUG(DOIP_LOG_MODULE_UDP, "Handling Entity Status Request");
         doip_entity_status_res_t res;
-        res.node_type        = 0x01;   /* DoIP node (not gateway) */
-        res.max_open_sockets = DOIP_MAX_TCP_CLIENTS;
+        res.node_type         = 0x01;   /* DoIP node (not gateway) */
+        res.max_open_sockets  = DOIP_MAX_TCP_CLIENTS;
         res.curr_open_sockets = doip_tcp_get_client_count();
-        res.max_data_size    = htonl(DOIP_MAX_PAYLOAD_SIZE);
-        udp_send_payload(DOIP_PT_ENTITY_STATUS_RES, &res, sizeof(res));
+        res.max_data_size     = htonl(DOIP_MAX_PAYLOAD_SIZE);
+        udp_send_to_addr(DOIP_PT_ENTITY_STATUS_RES, &res, sizeof(res), &src_addr);
 
     } else if (hdr.payload_type == DOIP_PT_POWER_MODE_REQ) {
-        /* Diagnostic Power Mode Request (ISO 13400-2 §7.5) */
+        /* Diagnostic Power Mode Request — respond unicast (ISO 13400-2 §7.5) */
         LOG_DEBUG(DOIP_LOG_MODULE_UDP, "Handling Power Mode Request");
         doip_power_mode_res_t res;
         res.power_mode = 0x01;   /* ready for diagnostics */
-        udp_send_payload(DOIP_PT_POWER_MODE_RES, &res, sizeof(res));
+        udp_send_to_addr(DOIP_PT_POWER_MODE_RES, &res, sizeof(res), &src_addr);
     }
     return 0;
 }
