@@ -56,7 +56,7 @@ int main(int argc, char *argv[]) {
      *    Change these values to match your target ECU without recompiling.
      */
     DoIP_EcuIdentity_t identity = {0};
-    strncpy(identity.vin,              "WBAXXXXXXXXXXXXXX", DOIP_VIN_LENGTH);
+    memcpy(identity.vin,               "WBAXXXXXXXXXXXXXX", DOIP_VIN_LENGTH); /* VIN is fixed 17-char; struct is zeroed so NUL is already at [17] */
     strncpy(identity.software_version, "V1.0.0",           sizeof(identity.software_version) - 1);
     strncpy(identity.system_name,      "DoIP ECU Simulator", sizeof(identity.system_name) - 1);
     strncpy(identity.serial_number,    "ECU123456789",     sizeof(identity.serial_number) - 1);
