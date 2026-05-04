@@ -120,7 +120,7 @@ void test_ff_plus_one_cf_complete(void)
     uint8_t data[14];
     for (int i = 0; i < 14; i++) data[i] = (uint8_t)i;
 
-    uint8_t in_ff[8], in_cf[8];
+    uint8_t in_ff[8], in_cf[9];
     make_ff(in_ff, 14, data);
     make_cf(in_cf, 1, data + 6, 8); /* last 8 bytes (padded, 14-6=8) */
 
@@ -163,7 +163,7 @@ void test_cf_sn_mismatch_rejected(void)
 {
     uint8_t data[14]; memset(data, 0xBB, 14);
     uint8_t in_ff[8]; make_ff(in_ff, 14, data);
-    uint8_t in_cf[8]; make_cf(in_cf, 3 /* wrong SN, expected 1 */, data + 6, 8);
+    uint8_t in_cf[9]; make_cf(in_cf, 3 /* wrong SN, expected 1 */, data + 6, 8);
 
     uint8_t out[32]; uint8_t fc[8]; uint8_t fc_len = 0;
     doip_isotp_rx(&g_ctx, in_ff, 8, out, sizeof(out), fc, &fc_len);
@@ -206,21 +206,21 @@ void test_tx_single_frame(void)
     TEST_ASSERT_EQUAL_MEMORY(data, segs[0] + 1, 5);
 }
 
-/** TEST 12: 14-byte payload → 1 FF + 1 CF. */
+/** TEST 12: 13-byte payload → 1 FF (6 bytes) + 1 CF (7 bytes). */
 void test_tx_ff_plus_cf(void)
 {
-    uint8_t data[14];
-    for (int i = 0; i < 14; i++) data[i] = (uint8_t)i;
+    uint8_t data[13];
+    for (int i = 0; i < 13; i++) data[i] = (uint8_t)i;
     uint8_t segs[4][8];
-    int count = doip_isotp_tx(&g_ctx, data, 14, segs, 4);
+    int count = doip_isotp_tx(&g_ctx, data, 13, segs, 4);
     TEST_ASSERT_EQUAL_INT(2, count);
 
     /* FF checks */
     TEST_ASSERT_EQUAL_UINT8(ISOTP_PCI_FF | 0x00, segs[0][0]);
-    TEST_ASSERT_EQUAL_UINT8(14, segs[0][1]);
+    TEST_ASSERT_EQUAL_UINT8(13, segs[0][1]);
     TEST_ASSERT_EQUAL_MEMORY(data, segs[0] + 2, 6);
 
-    /* CF checks */
+    /* CF checks — carries the remaining 7 bytes */
     TEST_ASSERT_EQUAL_UINT8(ISOTP_PCI_CF | 0x01, segs[1][0]);
     TEST_ASSERT_EQUAL_MEMORY(data + 6, segs[1] + 1, 7);
 }
