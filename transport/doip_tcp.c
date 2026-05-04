@@ -222,8 +222,9 @@ void doip_tcp_tick(uint32_t now_ms) {
                 close_client(c);
             }
         } else if ((now_ms - c->last_activity_ms) > DOIP_ALIVE_CHECK_INTERVAL_MS) {
-            /* Client idle too long — send an Alive Check Request */
-            if (doip_send_frame(c->fd, DOIP_PT_ALIVE_CHECK_REQ, NULL, 0) == 0) {
+            /* Client idle too long — send an Alive Check Request.
+             * doip_send_frame() returns the byte count (> 0) on success. */
+            if (doip_send_frame(c->fd, DOIP_PT_ALIVE_CHECK_REQ, NULL, 0) > 0) {
                 c->alive_check_sent_ms = now_ms;
                 LOG_DEBUG(DOIP_LOG_MODULE_TCP,
                           "Alive Check Request sent to fd=%d", c->fd);
