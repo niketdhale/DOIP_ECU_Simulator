@@ -289,9 +289,7 @@ static int process_client_frame(doip_client_t *client)
                 uint8_t nack[5];
                 put_be16(&nack[0], DOIP_ECU_LOGICAL_ADDRESS);
                 put_be16(&nack[2], tester_addr);
-                nack[4] = (client->state != DOIP_TCP_STATE_ACTIVATED)
-                              ? DOIP_DIAG_NACK_NOT_ACTIVATED
-                              : DOIP_DIAG_NACK_INVALID_SA;
+                nack[4] = DOIP_DIAG_NACK_INVALID_SA;
                 LOG_WARN(DOIP_LOG_MODULE_TCP,
                          "Diagnostic Req rejected (fd=%d, code=0x%02X)",
                          client->fd, nack[4]);
@@ -487,7 +485,7 @@ int doip_tcp_poll(DoIP_RxIndication rx_cb) {
                 client->uds_ctx.current_session  = UDS_ECU_DEFAULT_SESSION;
                 client->uds_ctx.last_activity_ms = get_time_ms();
                 client->rx_bytes = 0;
-client->connect_ms = get_time_ms();
+                client->connect_ms = get_time_ms();
                 if (!client_setup_io(client, new_fd)) {
                     close(new_fd);
                     memset(client, 0, sizeof(*client));
@@ -518,7 +516,7 @@ client->connect_ms = get_time_ms();
                 client->uds_ctx.current_session  = UDS_ECU_DEFAULT_SESSION;
                 client->uds_ctx.last_activity_ms = get_time_ms();
                 client->rx_bytes = 0;
-client->connect_ms = get_time_ms();
+                client->connect_ms = get_time_ms();
                 if (!client_setup_io(client, new_fd)) {
                     close(new_fd);
                     memset(client, 0, sizeof(*client));

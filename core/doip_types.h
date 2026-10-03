@@ -56,8 +56,7 @@ typedef enum {
 } doip_nack_code_t;
 
 /* ===== Diagnostic Message NACK Codes (ISO 13400-2) ===== */
-#define DOIP_DIAG_NACK_INVALID_SA       0x02U  /* Source address not the activated tester */
-#define DOIP_DIAG_NACK_NOT_ACTIVATED    0x06U  /* Routing not activated on this connection */
+#define DOIP_DIAG_NACK_INVALID_SA       0x02U  /* SA not activated on this socket (also used before routing activation) */
 
 /* ===== Routing Activation Codes (ISO 13400-2 Table 25) ===== */
 typedef enum {
