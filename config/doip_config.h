@@ -75,6 +75,9 @@
 /* If no Alive Check Response is received within this window the client is disconnected */
 #define DOIP_ALIVE_CHECK_TIMEOUT_MS     2000U
 
+/* Max time a TCP client may stay CONNECTED without completing Routing Activation */
+#define DOIP_INITIAL_INACTIVITY_TIMEOUT_MS 2000U
+
 /* ===== Feature Toggles ===== */
 #define DOIP_DEV_ERROR_DETECT       false
 #define DOIP_SUPPORT_VIN_REQUEST    true

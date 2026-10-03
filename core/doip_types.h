@@ -42,6 +42,7 @@ typedef enum {
     DOIP_PT_POWER_MODE_RES        = 0x4004,  /* UDP: Diagnostic Power Mode Response */
     DOIP_PT_DIAGNOSTIC_MSG        = 0x8001,  /* Diagnostic Message (Req & Res) */
     DOIP_PT_DIAGNOSTIC_ACK        = 0x8002,  /* Diagnostic Message ACK */
+    DOIP_PT_DIAGNOSTIC_NACK       = 0x8003,  /* Diagnostic Message NACK */
 } doip_payload_type_t;
 
 /* ===== Generic Header NACK Codes (ISO 13400-2 Table 19) ===== */
@@ -53,6 +54,9 @@ typedef enum {
     DOIP_NACK_OUT_OF_MEMORY       = 0x04,
     DOIP_NACK_INVALID_PAYLOAD     = 0x05,
 } doip_nack_code_t;
+
+/* ===== Diagnostic Message NACK Codes (ISO 13400-2) ===== */
+#define DOIP_DIAG_NACK_INVALID_SA       0x02U  /* SA not activated on this socket (also used before routing activation) */
 
 /* ===== Routing Activation Codes (ISO 13400-2 Table 25) ===== */
 typedef enum {

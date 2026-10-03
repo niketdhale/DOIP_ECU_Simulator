@@ -64,6 +64,8 @@
 #define DOIP_ALIVE_CHECK_INTERVAL_MS    5000U
 #define DOIP_ALIVE_CHECK_TIMEOUT_MS     2000U
 
+#define DOIP_INITIAL_INACTIVITY_TIMEOUT_MS 2000U
+
 /* ===== Feature Toggles ===== */
 #define DOIP_DEV_ERROR_DETECT       false
 #define DOIP_SUPPORT_VIN_REQUEST    true

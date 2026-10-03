@@ -41,6 +41,7 @@ typedef struct {
     doip_tcp_state_t    state;
     doip_logical_addr_t tester_logical_addr;
     uint32_t            last_activity_ms;
+    uint32_t            connect_ms;           /* Time the connection was accepted          */
     uint32_t            alive_check_sent_ms;  /* Non-zero while an Alive Check Req is pending */
     UdsClientContext_t  uds_ctx;              /* Per-client UDS state                      */
     bool                in_use;
