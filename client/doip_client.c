@@ -192,9 +192,12 @@ DoIP_ClientStatus_t DoIP_Client_Discover(const char *target_ip, uint16_t target_
 
     if (rx_hdr.payload_length < 17U + 2U)  /* VIN(17) + logical_address(2) minimum */
         return DOIP_CLIENT_ERR_IO;
+    if ((size_t)n < DOIP_HEADER_SIZE + sizeof(doip_vehicle_announce_t))
+        return DOIP_CLIENT_ERR_IO;
 
-    const doip_vehicle_announce_t *ann =
-        (const doip_vehicle_announce_t *)(rx_buf + DOIP_HEADER_SIZE);
+    doip_vehicle_announce_t ann_buf;
+    memcpy(&ann_buf, rx_buf + DOIP_HEADER_SIZE, sizeof(ann_buf));
+    const doip_vehicle_announce_t *ann = &ann_buf;
 
     inet_ntop(AF_INET, &src_addr.sin_addr, result_out->server_ip, INET_ADDRSTRLEN);
     result_out->logical_address = ntohs(ann->logical_address);
@@ -353,8 +356,10 @@ DoIP_ClientStatus_t DoIP_Client_SendDiagnostic(DoIP_Client_t *client,
 
     /* Payload layout: tester_la(2) | target_la(2) | uds_data */
     uint8_t payload[4U + DOIP_MAX_PAYLOAD_SIZE];
-    *(uint16_t *)&payload[0] = htons(client->tester_la);
-    *(uint16_t *)&payload[2] = htons(target_ecu_addr);
+    payload[0] = (uint8_t)(client->tester_la >> 8);
+    payload[1] = (uint8_t)client->tester_la;
+    payload[2] = (uint8_t)(target_ecu_addr >> 8);
+    payload[3] = (uint8_t)target_ecu_addr;
     memcpy(&payload[4], uds_data, uds_len);
 
     if (doip_send_frame(client->tcp_fd, DOIP_PT_DIAGNOSTIC_MSG,
@@ -398,7 +403,7 @@ DoIP_ClientStatus_t DoIP_Client_RecvDiagnostic(DoIP_Client_t *client,
                 uint16_t uds_len = (uint16_t)(rx_hdr.payload_length - 4U);
                 if (uds_len > resp_buf_size) return DOIP_CLIENT_ERR_IO;
                 if (src_addr_out)
-                    *src_addr_out = ntohs(*(const uint16_t *)&client->rx_payload[0]);
+                    *src_addr_out = (uint16_t)((client->rx_payload[0] << 8) | client->rx_payload[1]);
                 memcpy(resp_buf, &client->rx_payload[4], uds_len);
                 *resp_len_out = uds_len;
                 LOG_DEBUG(DOIP_LOG_MODULE_CLIENT, "Received UDS response (len=%u)", uds_len);

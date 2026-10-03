@@ -107,7 +107,7 @@ static int handle_ecu_reset(UdsClientContext_t *ctx, const uint8_t *req, uint16_
 
 static int handle_routine_control(UdsClientContext_t *ctx, const uint8_t *req, uint16_t req_len, uint8_t *res, uint16_t *res_len) {
     (void)ctx;
-    if (req_len < 3) {
+    if (req_len < 4) {
         res[0] = 0x7F; res[1] = UDS_SID_ROUTINE_CONTROL; res[2] = UDS_NRC_INCORRECT_MESSAGE_LENGTH; *res_len = 3; return -1;
     }
     res[0] = UDS_SID_ROUTINE_CONTROL_RES; res[1] = req[1]; res[2] = req[2]; res[3] = req[3]; res[4] = 0x00; *res_len = 5;

@@ -57,6 +57,7 @@ ssize_t doip_recv_n(int fd, void *buf, size_t len) {
         ssize_t n = recv(fd, ptr + total, len - total, 0);
         if (n == 0) return (total == 0) ? 0 : (ssize_t)total; /* Connection closed */
         if (n < 0) {
+            if (errno == EINTR) continue;
             if (errno == EAGAIN || errno == EWOULDBLOCK) return -2; /* Timeout */
             return -1; /* Real error */
         }

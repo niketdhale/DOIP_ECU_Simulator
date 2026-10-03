@@ -55,6 +55,18 @@ static void tls_close(void *ctx)
 {
     SSL *ssl = (SSL *)ctx;
     if (ssl) {
+        int fd = SSL_get_fd(ssl);
+        SSL_shutdown(ssl);
+        SSL_free(ssl);
+        if (fd >= 0) close(fd);
+    }
+}
+
+/* DTLS shares the server's UDP socket — free the session but leave the fd open */
+static void dtls_close(void *ctx)
+{
+    SSL *ssl = (SSL *)ctx;
+    if (ssl) {
         SSL_shutdown(ssl);
         SSL_free(ssl);
     }
@@ -102,6 +114,9 @@ int doip_tls_init(doip_tls_server_t *s,
     if (ca_file) {
         if (SSL_CTX_load_verify_locations(s->ctx, ca_file, NULL) != 1) {
             LOG_WARN(DOIP_LOG_MODULE_TCP, "TLS: Cannot load CA bundle '%s'", ca_file);
+            if (verify_peer) {
+                SSL_CTX_free(s->ctx); s->ctx = NULL; return -1;
+            }
         }
     }
 
@@ -170,6 +185,7 @@ doip_io_t doip_dtls_wrap(doip_tls_server_t *s, int udp_fd,
     doip_io_t io;
     memset(&io, 0, sizeof(io));
 
+    (void)plen;
     if (!s || !s->ctx || udp_fd < 0 || !peer) return io;
 
     SSL *ssl = SSL_new(s->ctx);
@@ -198,7 +214,7 @@ doip_io_t doip_dtls_wrap(doip_tls_server_t *s, int udp_fd,
     io.read  = tls_read;
     io.write = tls_write;
     io.getfd = tls_getfd;
-    io.close = tls_close;
+    io.close = dtls_close;
     return io;
 }
 
