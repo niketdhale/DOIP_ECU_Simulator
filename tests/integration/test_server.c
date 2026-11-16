@@ -1026,6 +1026,30 @@ void test_functional_addressing(void)
     close(fd);
 }
 
+/* ── Test 25: a tester that vanishes while responses are being written ── */
+
+void test_server_survives_disconnect_during_responses(void)
+{
+    /* 300 unknown-payload-type frames make the server write 300 NACKs, but the
+     * tester is gone before the first one arrives. Writing to the dead socket
+     * must fail quietly — a SIGPIPE would kill the whole process. No routing
+     * activation is needed to get here. */
+    int fd = raw_tcp_connect();
+    TEST_ASSERT_GREATER_THAN_INT(-1, fd);
+    static uint8_t burst[300 * DOIP_HEADER_SIZE];
+    size_t len = 0;
+    for (int i = 0; i < 300; i++)
+        len += raw_frame(burst + len, DOIP_PROTOCOL_VERSION, 0x9999, NULL, 0);
+    send(fd, burst, len, 0);
+    close(fd);
+    usleep(150000);
+
+    /* Still serving */
+    DoIP_Client_t *c = client_connect_and_activate();
+    TEST_ASSERT_NOT_NULL(c);
+    client_destroy(c);
+}
+
 /* ── Entry point ───────────────────────────────────────────────────── */
 
 int main(void)
@@ -1056,6 +1080,7 @@ int main(void)
     RUN_TEST(test_client_waits_through_response_pending);
     RUN_TEST(test_fault_force_nack_drop_ack_drop_response);
     RUN_TEST(test_functional_addressing);
+    RUN_TEST(test_server_survives_disconnect_during_responses);
 
     return UNITY_END();
 }

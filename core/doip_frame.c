@@ -4,6 +4,11 @@
 #include <errno.h>
 #include <arpa/inet.h>
 
+/* A peer that closes mid-write must give EPIPE, not a process-killing SIGPIPE */
+#ifndef MSG_NOSIGNAL
+#define MSG_NOSIGNAL 0
+#endif
+
 static int doip_validate_header(const doip_header_t *hdr) {
     if (hdr->protocol_version == DOIP_PROTOCOL_VERSION &&
         hdr->inverse_version == DOIP_INVERSE_VERSION) return 1;
@@ -47,7 +52,7 @@ ssize_t doip_send_frame(int sock_fd, uint16_t ptype, const void *payload, uint32
     if (plen > 0) memcpy(tx_buf + DOIP_HEADER_SIZE, payload, plen);
     size_t total = DOIP_HEADER_SIZE + plen, sent = 0;
     while (sent < total) {
-        ssize_t n = send(sock_fd, tx_buf + sent, total - sent, 0);
+        ssize_t n = send(sock_fd, tx_buf + sent, total - sent, MSG_NOSIGNAL);
         if (n <= 0) return (sent == 0) ? n : (ssize_t)sent;
         sent += n;
     }

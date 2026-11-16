@@ -21,9 +21,15 @@ static ssize_t plain_read(void *ctx, void *buf, size_t len)
     return recv((int)(intptr_t)ctx, buf, len, 0);
 }
 
+/* A peer that disconnects while we are still writing must produce EPIPE, not
+ * a SIGPIPE that kills the whole process. */
+#ifndef MSG_NOSIGNAL
+#define MSG_NOSIGNAL 0   /* platforms without it need SIGPIPE ignored instead */
+#endif
+
 static ssize_t plain_write(void *ctx, const void *buf, size_t len)
 {
-    return send((int)(intptr_t)ctx, buf, len, 0);
+    return send((int)(intptr_t)ctx, buf, len, MSG_NOSIGNAL);
 }
 
 static int plain_getfd(void *ctx)
