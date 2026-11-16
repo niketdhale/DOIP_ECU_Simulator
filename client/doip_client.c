@@ -374,8 +374,10 @@ DoIP_ClientStatus_t DoIP_Client_RecvDiagnostic(DoIP_Client_t *client,
     if (!client || !resp_buf || !resp_len_out) return DOIP_CLIENT_ERR_PARAM;
     if (client->state != DOIP_CLI_STATE_ACTIVATED)  return DOIP_CLIENT_ERR_NOT_READY;
 
-    /* Loop: consume DiagACK and Alive Checks transparently, return on DiagMsg */
-    for (int i = 0; i < 3; i++) {
+    /* Loop: consume DiagACK, Alive Checks and "response pending" (7F xx 78)
+     * transparently, return on the final DiagMsg. Each frame restarts the
+     * response timeout, as P2* does. */
+    for (int i = 0; i < 64; i++) {
         doip_header_t rx_hdr;
         DoIP_ClientStatus_t rc = client_recv_frame(client->tcp_fd,
                                                     client->config.response_timeout_ms,
@@ -403,6 +405,10 @@ DoIP_ClientStatus_t DoIP_Client_RecvDiagnostic(DoIP_Client_t *client,
             case DOIP_PT_DIAGNOSTIC_MSG: {
                 if (rx_hdr.payload_length < 4U) return DOIP_CLIENT_ERR_IO;
                 uint16_t uds_len = (uint16_t)(rx_hdr.payload_length - 4U);
+                if (uds_len == 3 && client->rx_payload[4] == 0x7F && client->rx_payload[6] == 0x78) {
+                    LOG_DEBUG(DOIP_LOG_MODULE_CLIENT, "Response pending — still waiting");
+                    continue;
+                }
                 if (uds_len > resp_buf_size) return DOIP_CLIENT_ERR_IO;
                 if (src_addr_out)
                     *src_addr_out = (uint16_t)((client->rx_payload[0] << 8) | client->rx_payload[1]);

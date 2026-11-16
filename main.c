@@ -49,6 +49,11 @@ static void usage(const char *prog) {
            "  --port <port>         UDP + TCP port (default %u)\n"
            "  --log-level <1-4>     1=WARN 2=INFO 3=DEBUG 4=VERBOSE (default 3)\n"
            "  --log-file <path>     Also write the log to a file\n"
+           "Fault injection:\n"
+           "  --response-delay <ms> Delay UDS responses (sends 7F xx 78 while waiting)\n"
+           "  --drop-ack            Never send the DoIP diagnostic ACK\n"
+           "  --drop-response       Never send UDS responses\n"
+           "  --force-nack <code>   Reject every diagnostic message with this NACK code\n"
            "  --help                Show this help\n",
            prog, (unsigned)DOIP_TCP_PORT);
 }
@@ -104,6 +109,10 @@ int main(int argc, char *argv[]) {
         { "port",      required_argument, NULL, 'p' },
         { "log-level", required_argument, NULL, 'l' },
         { "log-file",  required_argument, NULL, 'f' },
+        { "response-delay", required_argument, NULL, 'd' },
+        { "drop-ack",       no_argument,       NULL, 'A' },
+        { "drop-response",  no_argument,       NULL, 'R' },
+        { "force-nack",     required_argument, NULL, 'n' },
         { "help",      no_argument,       NULL, 'h' },
         { 0 }
     };
@@ -123,6 +132,10 @@ int main(int argc, char *argv[]) {
             case 'p': config.port            = (uint16_t)parse_num("port", optarg, 65535);     break;
             case 'l': config.log_level       = (uint8_t)parse_num("log-level", optarg, 4);     break;
             case 'f': config.log_file_path   = optarg; break;
+            case 'd': config.faults.response_delay_ms = (uint32_t)parse_num("response-delay", optarg, 600000); break;
+            case 'A': config.faults.drop_diag_ack     = true; break;
+            case 'R': config.faults.drop_response     = true; break;
+            case 'n': config.faults.force_diag_nack   = (uint8_t)parse_num("force-nack", optarg, 0xFF); break;
             case 'h': usage(argv[0]); DoIP_Destroy(handle); return EXIT_SUCCESS;
             default:  usage(argv[0]); DoIP_Destroy(handle); return EXIT_FAILURE;
         }

@@ -54,6 +54,7 @@ void doip_tcp_tls_config(const char *cert_file, const char *key_file,
 #endif
 
 static int g_tcp_srv_fd = -1;
+static DoIP_FaultConfig_t g_faults;   /* all-zero = well-behaved ECU */
 static doip_client_t g_clients[DOIP_MAX_TCP_CLIENTS] = {0};
 
 /* ---------------------------------------------------------------------------
@@ -287,6 +288,8 @@ next_frame:
             else if (target_addr != g_doip_ecu_logical_addr)
                 nack_code = DOIP_DIAG_NACK_UNKNOWN_TA;
 
+            if (g_faults.force_diag_nack) nack_code = g_faults.force_diag_nack;
+
             if (nack_code) {
                 uint8_t nack[5];
                 put_be16(&nack[0], target_addr);
@@ -323,8 +326,15 @@ next_frame:
 
             uint8_t  uds_response[DOIP_MAX_PAYLOAD_SIZE];
             uint16_t uds_res_len = 0;
-            (void)doip_uds_process_request(&client->uds_ctx, uds_req, uds_req_len,
-                                            uds_response, &uds_res_len);
+            bool     busy = client->pending_len > 0;
+            if (busy) {
+                /* Still working on the previous (delayed) request */
+                uds_response[0] = 0x7F; uds_response[1] = uds_req_len ? uds_req[0] : 0;
+                uds_response[2] = UDS_NRC_BUSY_REPEAT_REQUEST; uds_res_len = 3;
+            } else {
+                (void)doip_uds_process_request(&client->uds_ctx, uds_req, uds_req_len,
+                                                uds_response, &uds_res_len);
+            }
 
             if (uds_res_len > DOIP_MAX_PAYLOAD_SIZE - 4U) {
                 LOG_WARN(DOIP_LOG_MODULE_TCP,
@@ -337,10 +347,26 @@ next_frame:
             put_be16(&ack_payload[0], g_doip_ecu_logical_addr);
             put_be16(&ack_payload[2], tester_addr);
             ack_payload[4] = 0x00;
-            client_send_frame(client, DOIP_PT_DIAGNOSTIC_ACK,
-                               ack_payload, sizeof(ack_payload));
-            if (uds_res_len > 0)
+            if (!g_faults.drop_diag_ack)
+                client_send_frame(client, DOIP_PT_DIAGNOSTIC_ACK,
+                                   ack_payload, sizeof(ack_payload));
+            if (uds_res_len == 0 || g_faults.drop_response) break;
+
+            if (busy || g_faults.response_delay_ms == 0) {
                 client_send_diag(client, tester_addr, uds_response, uds_res_len);
+                break;
+            }
+            /* Hold the response back; doip_tcp_tick() releases it */
+            uint32_t now = get_time_ms();
+            memcpy(client->pending_res, uds_response, uds_res_len);
+            client->pending_len       = uds_res_len;
+            client->pending_due_ms    = now + g_faults.response_delay_ms;
+            client->pending_next78_ms = client->pending_due_ms;   /* i.e. never */
+            if (g_faults.response_delay_ms > UDS_P2_SERVER_MS) {
+                const uint8_t pending[3] = { 0x7F, uds_req[0], UDS_NRC_RESPONSE_PENDING };
+                client_send_diag(client, tester_addr, pending, sizeof(pending));
+                client->pending_next78_ms = now + UDS_P2_STAR_SERVER_MS / 2;
+            }
             break;
         }
 
@@ -490,6 +516,7 @@ int doip_tcp_poll(DoIP_RxIndication rx_cb) {
                 client->uds_ctx.current_session  = UDS_ECU_DEFAULT_SESSION;
                 client->uds_ctx.last_activity_ms = get_time_ms();
                 client->rx_bytes = 0;
+                client->pending_len = 0;
                 client->connect_ms = get_time_ms();
                 if (!client_setup_io(client, new_fd)) {
                     close(new_fd);
@@ -522,6 +549,7 @@ int doip_tcp_poll(DoIP_RxIndication rx_cb) {
                 client->uds_ctx.current_session  = UDS_ECU_DEFAULT_SESSION;
                 client->uds_ctx.last_activity_ms = get_time_ms();
                 client->rx_bytes = 0;
+                client->pending_len = 0;
                 client->connect_ms = get_time_ms();
                 if (!client_setup_io(client, new_fd)) {
                     close(new_fd);
@@ -572,6 +600,19 @@ void doip_tcp_tick(uint32_t now_ms) {
         }
         if (c->state != DOIP_TCP_STATE_ACTIVATED) continue;
 
+        if (c->pending_len > 0) {
+            if ((int32_t)(now_ms - c->pending_due_ms) >= 0) {
+                client_send_diag(c, c->tester_logical_addr, c->pending_res, c->pending_len);
+                c->pending_len = 0;
+            } else if ((int32_t)(now_ms - c->pending_next78_ms) >= 0) {
+                const uint8_t pending[3] = { 0x7F, c->pending_res[0] == 0x7F ? c->pending_res[1]
+                                                   : (uint8_t)(c->pending_res[0] - 0x40),
+                                             UDS_NRC_RESPONSE_PENDING };
+                client_send_diag(c, c->tester_logical_addr, pending, sizeof(pending));
+                c->pending_next78_ms = now_ms + UDS_P2_STAR_SERVER_MS / 2;
+            }
+        }
+
         if (c->alive_check_sent_ms != 0) {
             /* Alive Check already pending — check for timeout */
             if ((int32_t)(now_ms - c->alive_check_sent_ms) > (int32_t)DOIP_ALIVE_CHECK_TIMEOUT_MS) {
@@ -591,6 +632,11 @@ void doip_tcp_tick(uint32_t now_ms) {
             }
         }
     }
+}
+
+void doip_tcp_set_faults(const DoIP_FaultConfig_t *faults) {
+    if (faults) g_faults = *faults;
+    else        memset(&g_faults, 0, sizeof(g_faults));
 }
 
 uint8_t doip_tcp_get_client_count(void) {

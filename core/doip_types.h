@@ -13,6 +13,7 @@
 #define DOIP_TYPES_H
 
 #include <stdint.h>
+#include <stdbool.h>
 #include "config/doip_config.h"
 
 /* ===== Generic DoIP Header (ISO 13400-2 Table 11) [[69]] ===== */
@@ -112,6 +113,25 @@ typedef struct {
     uint8_t further_action;            /**< Further action byte (default 0x00 = none required)        */
     uint8_t vin_gw_sync_status;       /**< VIN/GW sync status (default 0x00 = synchronized)          */
 } DoIP_EcuIdentity_t;
+
+/* ===== Fault Injection ===== */
+/**
+ * @brief Deliberate misbehaviour for testing tester robustness.
+ *
+ * All-zero means a well-behaved ECU. Set at init through
+ * DoIP_Config_t::faults or at any time with DoIP_SetFaults().
+ */
+typedef struct {
+    /** Delay every UDS response by this many ms. When longer than
+     *  UDS_P2_SERVER_MS the ECU first answers 7F <sid> 78 (response pending)
+     *  and repeats it every UDS_P2_STAR_SERVER_MS / 2 until the real response;
+     *  further requests from that tester meanwhile get NRC 0x21 (busy). */
+    uint32_t response_delay_ms;
+    bool     drop_diag_ack;      /**< Do not send the DoIP Diagnostic ACK (0x8002).       */
+    bool     drop_response;      /**< Swallow every UDS response (tester sees a timeout). */
+    uint8_t  force_diag_nack;    /**< Non-zero: reject every diagnostic message with a
+                                      Diagnostic NACK (0x8003) carrying this code.        */
+} DoIP_FaultConfig_t;
 
 /** @} */ /* end of doip_types group */
 

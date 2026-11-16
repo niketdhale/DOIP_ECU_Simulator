@@ -715,6 +715,19 @@ The response is 9 bytes: tester address(2), entity address(2), code(1), reserved
 | Routing not activated, or source address differs from the activated one | `0x02` invalid source address |
 | Target address is not `DOIP_ECU_LOGICAL_ADDRESS` | `0x03` unknown target address |
 
+### Fault injection
+
+Make the simulator misbehave on purpose to test a tester's error handling. Set `DoIP_Config_t::faults` at init, call `DoIP_SetFaults(handle, &faults)` at runtime (`NULL` clears), or use the CLI flags.
+
+| Field / flag | Effect |
+|--------------|--------|
+| `response_delay_ms` / `--response-delay <ms>` | Delays every UDS response. Above `UDS_P2_SERVER_MS` the ECU first sends `7F <sid> 78` (response pending), repeats it every `UDS_P2_STAR_SERVER_MS / 2`, and answers further requests with NRC `0x21` until the real response goes out |
+| `drop_diag_ack` / `--drop-ack` | No DoIP Diagnostic ACK (`0x8002`) |
+| `drop_response` / `--drop-response` | UDS responses are swallowed |
+| `force_diag_nack` / `--force-nack <code>` | Every diagnostic message is rejected with Diagnostic NACK (`0x8003`) and this code |
+
+The bundled client waits through `7F xx 78` automatically.
+
 ### Protocol version
 
 `DOIP_VERSION_2012` sends header version `0x02`/`0xFD`; `DOIP_VERSION_2019` (or `make DOIP_2019=1`) sends `0x03`/`0xFC`. Logical addresses are 16-bit in both.

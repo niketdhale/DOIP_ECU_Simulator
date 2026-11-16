@@ -47,6 +47,12 @@ typedef struct {
     uint8_t             rx_buf[DOIP_HEADER_SIZE + DOIP_MAX_PAYLOAD_SIZE];
     size_t              rx_bytes;             /* Bytes accumulated so far                  */
 
+    /* Delayed UDS response (fault injection: response_delay_ms) */
+    uint8_t             pending_res[DOIP_MAX_PAYLOAD_SIZE];
+    uint16_t            pending_len;          /* > 0 while a response is being held back   */
+    uint32_t            pending_due_ms;       /* When the held response is released        */
+    uint32_t            pending_next78_ms;    /* When the next 7F xx 78 is due             */
+
     /* Peer address string for logging (IPv4 or IPv6) */
     char                peer_ip[INET6_ADDRSTRLEN];
 
@@ -62,6 +68,7 @@ int doip_tcp_poll(DoIP_RxIndication rx_cb);
 void doip_tcp_tick(uint32_t now_ms);      /* Server-initiated Alive Check + timeout */
 uint8_t doip_tcp_get_client_count(void);  /* Count of currently active clients       */
 void doip_tcp_deinit(void);
+void doip_tcp_set_faults(const DoIP_FaultConfig_t *faults);  /* NULL = no faults */
 
 #if DOIP_ENABLE_TLS
 /**

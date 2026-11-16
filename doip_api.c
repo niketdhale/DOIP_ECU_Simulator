@@ -102,7 +102,9 @@ int DoIP_Init(DoIP_Handle_t *handle, const DoIP_Config_t *config) {
         if (config->on_frame_received)    handle->config.on_frame_received    = config->on_frame_received;
         handle->config.logical_address = config->logical_address;
         handle->config.port            = config->port;
+        handle->config.faults          = config->faults;
     }
+    doip_tcp_set_faults(&handle->config.faults);
 
     /* 0 = compiled-in default */
     g_doip_ecu_logical_addr = handle->config.logical_address ? handle->config.logical_address
@@ -139,6 +141,19 @@ int DoIP_Init(DoIP_Handle_t *handle, const DoIP_Config_t *config) {
 
     handle->is_initialized = true;
 unlock:
+    pthread_mutex_unlock(&g_api_mutex);
+    return ret;
+}
+
+int DoIP_SetFaults(DoIP_Handle_t *handle, const DoIP_FaultConfig_t *faults) {
+    int ret = -1;
+    pthread_mutex_lock(&g_api_mutex);
+    if (handle && handle->is_initialized) {
+        if (faults) handle->config.faults = *faults;
+        else        memset(&handle->config.faults, 0, sizeof(handle->config.faults));
+        doip_tcp_set_faults(&handle->config.faults);
+        ret = 0;
+    }
     pthread_mutex_unlock(&g_api_mutex);
     return ret;
 }

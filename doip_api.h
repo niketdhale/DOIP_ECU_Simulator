@@ -139,6 +139,9 @@ typedef struct {
     /** UDP + TCP port; 0 = compiled-in DOIP_TCP_PORT (13400). */
     uint16_t port;
 
+    /** Fault injection active from start-up; all-zero = none. See DoIP_SetFaults(). */
+    DoIP_FaultConfig_t faults;
+
 #if DOIP_ENABLE_TLS
     /** TLS server certificate, key, and optional CA bundle. */
     struct {
@@ -224,6 +227,16 @@ DOIP_API void DoIP_SetLogLevel(DoIP_Handle_t *handle, uint8_t level);
  * @param[in]     enable  @c true to start announcements, @c false to stop.
  */
 DOIP_API void DoIP_EnablePeriodicAnnounce(DoIP_Handle_t *handle, bool enable);
+
+/**
+ * @brief Change fault injection while the simulator is running.
+ *
+ * @param[in,out] handle  Initialised handle.
+ * @param[in]     faults  New settings, or NULL to clear all faults.
+ * @retval  0  Applied.
+ * @retval -1  @p handle is NULL or not initialised.
+ */
+DOIP_API int DoIP_SetFaults(DoIP_Handle_t *handle, const DoIP_FaultConfig_t *faults);
 
 /** @} */ /* end of doip_server_api group */
 

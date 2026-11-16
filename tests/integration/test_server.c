@@ -27,6 +27,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <time.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -839,6 +840,126 @@ void test_runtime_port_and_logical_address(void)
     client_destroy(c);
 }
 
+/* ── Fault injection ───────────────────────────────────────────────── */
+
+/** Activate routing on a raw socket (tester 0x0E00). */
+static int raw_activated_socket(void)
+{
+    uint8_t resp[64];
+    int fd = raw_tcp_connect();
+    if (fd < 0) return -1;
+    const uint8_t act[7] = { 0x0E, 0x00, 0x00, 0, 0, 0, 0 };
+    if (tcp_exchange(fd, DOIP_PT_ROUTING_ACT_REQ, act, sizeof(act), resp, sizeof(resp)) <= 0) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+static uint32_t now_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint32_t)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
+}
+
+static const uint8_t k_tester_present[6] = { 0x0E, 0x00, DOIP_ECU_LOGICAL_ADDRESS >> 8,
+                                             DOIP_ECU_LOGICAL_ADDRESS & 0xFF, 0x3E, 0x00 };
+
+/* Test 21: delayed response → 7F 3E 78 first, busy NRC for a second request, then the answer */
+void test_fault_response_delay_sends_pending_and_busy(void)
+{
+    DoIP_FaultConfig_t f = { .response_delay_ms = 300 };
+    TEST_ASSERT_EQUAL_INT(0, DoIP_SetFaults(g_server, &f));
+
+    int fd = raw_activated_socket();
+    TEST_ASSERT_GREATER_THAN_INT(-1, fd);
+    uint8_t frame[32];
+    size_t flen = raw_frame(frame, DOIP_PROTOCOL_VERSION, DOIP_PT_DIAGNOSTIC_MSG,
+                            k_tester_present, sizeof(k_tester_present));
+    uint32_t t0 = now_ms();
+    send(fd, frame, flen, 0);
+    usleep(50000);
+    send(fd, frame, flen, 0);            /* second request while the first is pending */
+
+    /* ACK, 7F 3E 78, ACK, 7F 3E 21, then 7E 00 after the delay */
+    const size_t expected = 13 + 15 + 13 + 15 + 14;
+    uint8_t resp[128];
+    size_t got = 0;
+    while (got < expected) {
+        ssize_t n = recv(fd, resp + got, sizeof(resp) - got, 0);
+        if (n <= 0) break;
+        got += (size_t)n;
+    }
+    uint32_t elapsed = now_ms() - t0;
+    TEST_ASSERT_EQUAL_UINT(expected, got);
+    const uint8_t pending[3] = { 0x7F, 0x3E, 0x78 }, busy[3] = { 0x7F, 0x3E, 0x21 }, final[2] = { 0x7E, 0x00 };
+    TEST_ASSERT_EQUAL_MEMORY(pending, resp + 13 + 12, 3);
+    TEST_ASSERT_EQUAL_MEMORY(busy,    resp + 13 + 15 + 13 + 12, 3);
+    TEST_ASSERT_EQUAL_MEMORY(final,   resp + expected - 2, 2);
+    TEST_ASSERT_GREATER_OR_EQUAL_UINT32(290, elapsed);
+    close(fd);
+}
+
+/* Test 22: the client library waits through "response pending" */
+void test_client_waits_through_response_pending(void)
+{
+    DoIP_FaultConfig_t f = { .response_delay_ms = 200 };
+    TEST_ASSERT_EQUAL_INT(0, DoIP_SetFaults(g_server, &f));
+
+    DoIP_Client_t *c = client_connect_and_activate();
+    TEST_ASSERT_NOT_NULL(c);
+    uint8_t req[] = { UDS_SID_READ_DATA_BY_ID, 0xF1, 0x90 };
+    uint8_t resp[64];
+    uint16_t rlen = 0;
+    TEST_ASSERT_EQUAL_INT(DOIP_CLIENT_OK, DoIP_Client_Transact(
+        c, DOIP_ECU_LOGICAL_ADDRESS, req, sizeof(req), resp, sizeof(resp), &rlen));
+    TEST_ASSERT_EQUAL_HEX8(UDS_SID_READ_DATA_BY_ID_RES, resp[0]);
+    TEST_ASSERT_EQUAL_UINT16(3 + DOIP_VIN_LENGTH, rlen);
+
+    /* Clearing the faults restores immediate responses */
+    TEST_ASSERT_EQUAL_INT(0, DoIP_SetFaults(g_server, NULL));
+    uint32_t t0 = now_ms();
+    TEST_ASSERT_EQUAL_INT(DOIP_CLIENT_OK, DoIP_Client_Transact(
+        c, DOIP_ECU_LOGICAL_ADDRESS, req, sizeof(req), resp, sizeof(resp), &rlen));
+    TEST_ASSERT_LESS_THAN_UINT32(150, now_ms() - t0);
+    client_destroy(c);
+}
+
+/* Test 23: forced NACK, dropped ACK, dropped response */
+void test_fault_force_nack_drop_ack_drop_response(void)
+{
+    uint8_t resp[64];
+    struct timeval short_tv = { .tv_sec = 0, .tv_usec = 300000 };
+
+    DoIP_FaultConfig_t nack = { .force_diag_nack = 0x05 };
+    DoIP_SetFaults(g_server, &nack);
+    int fd = raw_activated_socket();
+    TEST_ASSERT_GREATER_THAN_INT(-1, fd);
+    ssize_t n = tcp_exchange(fd, DOIP_PT_DIAGNOSTIC_MSG, k_tester_present, sizeof(k_tester_present),
+                             resp, sizeof(resp));
+    TEST_ASSERT_EQUAL_INT(13, n);
+    TEST_ASSERT_EQUAL_HEX8(0x03, resp[3]);                    /* PT 0x8003 */
+    TEST_ASSERT_EQUAL_HEX8(0x05, resp[DOIP_HEADER_SIZE + 4]);
+
+    DoIP_FaultConfig_t no_ack = { .drop_diag_ack = true };
+    DoIP_SetFaults(g_server, &no_ack);
+    n = tcp_exchange(fd, DOIP_PT_DIAGNOSTIC_MSG, k_tester_present, sizeof(k_tester_present),
+                     resp, sizeof(resp));
+    TEST_ASSERT_EQUAL_INT(14, n);                             /* UDS response only */
+    TEST_ASSERT_EQUAL_HEX8(0x01, resp[3]);                    /* PT 0x8001 */
+
+    DoIP_FaultConfig_t no_resp = { .drop_response = true };
+    DoIP_SetFaults(g_server, &no_resp);
+    n = tcp_exchange(fd, DOIP_PT_DIAGNOSTIC_MSG, k_tester_present, sizeof(k_tester_present),
+                     resp, sizeof(resp));
+    TEST_ASSERT_EQUAL_INT(13, n);                             /* ACK only */
+    TEST_ASSERT_EQUAL_HEX8(0x02, resp[3]);                    /* PT 0x8002 */
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &short_tv, sizeof(short_tv));
+    TEST_ASSERT_LESS_THAN_INT(1, recv(fd, resp, sizeof(resp), 0));
+    close(fd);
+}
+
 /* ── Entry point ───────────────────────────────────────────────────── */
 
 int main(void)
@@ -865,6 +986,9 @@ int main(void)
     RUN_TEST(test_written_vin_appears_in_udp_response);
     RUN_TEST(test_client_reports_diag_nack);
     RUN_TEST(test_runtime_port_and_logical_address);
+    RUN_TEST(test_fault_response_delay_sends_pending_and_busy);
+    RUN_TEST(test_client_waits_through_response_pending);
+    RUN_TEST(test_fault_force_nack_drop_ack_drop_response);
 
     return UNITY_END();
 }
