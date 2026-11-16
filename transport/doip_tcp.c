@@ -104,7 +104,7 @@ static void client_send_diag(doip_client_t *c, uint16_t tester_addr,
 {
     uint8_t buf[4 + DOIP_MAX_PAYLOAD_SIZE];
     if ((uint32_t)len + 4U > DOIP_MAX_PAYLOAD_SIZE) return;
-    put_be16(&buf[0], DOIP_ECU_LOGICAL_ADDRESS);
+    put_be16(&buf[0], g_doip_ecu_logical_addr);
     put_be16(&buf[2], tester_addr);
     memcpy(&buf[4], data, len);
     client_send_frame(c, DOIP_PT_DIAGNOSTIC_MSG, buf, 4U + len);
@@ -255,7 +255,7 @@ next_frame:
 
             doip_routing_act_res_t res; memset(&res, 0, sizeof(res));
             res.tester_logical_address = req->tester_logical_address;
-            res.ecu_logical_address    = htons(DOIP_ECU_LOGICAL_ADDRESS);
+            res.ecu_logical_address    = htons(g_doip_ecu_logical_addr);
             res.activation_code = resp_code;
             if (client_send_frame(client, DOIP_PT_ROUTING_ACT_RES,
                                    &res, sizeof(res)) < 0 ||
@@ -284,7 +284,7 @@ next_frame:
             if (client->state != DOIP_TCP_STATE_ACTIVATED ||
                 tester_addr != client->tester_logical_addr)
                 nack_code = DOIP_DIAG_NACK_INVALID_SA;
-            else if (target_addr != DOIP_ECU_LOGICAL_ADDRESS)
+            else if (target_addr != g_doip_ecu_logical_addr)
                 nack_code = DOIP_DIAG_NACK_UNKNOWN_TA;
 
             if (nack_code) {
@@ -334,7 +334,7 @@ next_frame:
             /* The DoIP ACK confirms receipt of the request and is sent even
              * when the UDS layer suppresses its positive response. */
             uint8_t ack_payload[5];
-            put_be16(&ack_payload[0], DOIP_ECU_LOGICAL_ADDRESS);
+            put_be16(&ack_payload[0], g_doip_ecu_logical_addr);
             put_be16(&ack_payload[2], tester_addr);
             ack_payload[4] = 0x00;
             client_send_frame(client, DOIP_PT_DIAGNOSTIC_ACK,
@@ -409,7 +409,7 @@ int doip_tcp_init(void) {
     memset(&addr6, 0, sizeof(addr6));
     addr6.sin6_family = AF_INET6;
     addr6.sin6_addr   = in6addr_any;
-    addr6.sin6_port   = htons(DOIP_TCP_PORT);
+    addr6.sin6_port   = htons(g_doip_port);
     if (bind(g_tcp_srv_fd, (struct sockaddr *)&addr6, sizeof(addr6)) < 0) {
         LOG_ERROR(DOIP_LOG_MODULE_TCP, "bind (IPv6) failed: %s", strerror(errno));
         close(g_tcp_srv_fd); g_tcp_srv_fd = -1; return -2;
@@ -419,7 +419,7 @@ int doip_tcp_init(void) {
     memset(&addr, 0, sizeof(addr));
     addr.sin_family      = AF_INET;
     addr.sin_addr.s_addr = INADDR_ANY;
-    addr.sin_port        = htons(DOIP_TCP_PORT);
+    addr.sin_port        = htons(g_doip_port);
     if (bind(g_tcp_srv_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         LOG_ERROR(DOIP_LOG_MODULE_TCP, "bind failed: %s", strerror(errno));
         close(g_tcp_srv_fd); g_tcp_srv_fd = -1; return -2;
@@ -446,7 +446,7 @@ int doip_tcp_init(void) {
 
     LOG_INFO(DOIP_LOG_MODULE_TCP,
              "TCP server listening on port %d (max %d clients, IPv6=%s, TLS=%s)",
-             DOIP_TCP_PORT, DOIP_MAX_TCP_CLIENTS,
+             g_doip_port, DOIP_MAX_TCP_CLIENTS,
              DOIP_ENABLE_IPV6 ? "yes" : "no",
              DOIP_ENABLE_TLS  ? "yes" : "no");
     return 0;

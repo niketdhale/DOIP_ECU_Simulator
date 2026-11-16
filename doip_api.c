@@ -17,6 +17,8 @@ DoIP_ClientConnectCb     g_doip_client_connect_cb    = NULL;
 DoIP_ClientDisconnectCb  g_doip_client_disconnect_cb = NULL;
 DoIP_FrameReceivedCb     g_doip_frame_received_cb    = NULL;
 void                    *g_doip_async_user_ctx        = NULL;
+uint16_t                 g_doip_ecu_logical_addr      = DOIP_ECU_LOGICAL_ADDRESS;
+uint16_t                 g_doip_port                  = DOIP_TCP_PORT;
 
 struct DoIP_Context {
     DoIP_Config_t      config;
@@ -55,12 +57,12 @@ static const DoIP_Config_t g_default_config = {
 };
 
 static int DoIP_Config_Validate(void) {
-    uint16_t ecu_addr = DOIP_ECU_LOGICAL_ADDRESS;
+    uint16_t ecu_addr = g_doip_ecu_logical_addr;
     bool addr_valid = ((ecu_addr >= 0x0001 && ecu_addr <= 0x0DFF) ||
                        (ecu_addr >= 0x1000 && ecu_addr <= 0x7FFF) ||
                        (ecu_addr >= 0x8000 && ecu_addr <= 0xDFFF));
-    if (!addr_valid) { LOG_ERROR(DOIP_LOG_MODULE_CORE, "Config Error: DOIP_ECU_LOGICAL_ADDRESS 0x%04X is invalid.", ecu_addr); return -1; }
-    if (DOIP_TCP_PORT == 0 || DOIP_UDP_PORT == 0) { LOG_ERROR(DOIP_LOG_MODULE_CORE, "Config Error: Ports cannot be 0."); return -1; }
+    if (!addr_valid) { LOG_ERROR(DOIP_LOG_MODULE_CORE, "Config Error: ECU logical address 0x%04X is invalid.", ecu_addr); return -1; }
+    if (g_doip_port == 0) { LOG_ERROR(DOIP_LOG_MODULE_CORE, "Config Error: Ports cannot be 0."); return -1; }
     if (DOIP_MAX_PAYLOAD_SIZE < 8) { LOG_ERROR(DOIP_LOG_MODULE_CORE, "Config Error: Payload size too small."); return -1; }
     if (DOIP_ROUTING_ACTIVATION_TIMEOUT_MS < 1000) { LOG_ERROR(DOIP_LOG_MODULE_CORE, "Config Error: Timeout too short."); return -1; }
     LOG_INFO(DOIP_LOG_MODULE_CORE, "Configuration validation passed.");
@@ -98,7 +100,14 @@ int DoIP_Init(DoIP_Handle_t *handle, const DoIP_Config_t *config) {
         if (config->on_client_connect)    handle->config.on_client_connect    = config->on_client_connect;
         if (config->on_client_disconnect) handle->config.on_client_disconnect = config->on_client_disconnect;
         if (config->on_frame_received)    handle->config.on_frame_received    = config->on_frame_received;
+        handle->config.logical_address = config->logical_address;
+        handle->config.port            = config->port;
     }
+
+    /* 0 = compiled-in default */
+    g_doip_ecu_logical_addr = handle->config.logical_address ? handle->config.logical_address
+                                                             : DOIP_ECU_LOGICAL_ADDRESS;
+    g_doip_port             = handle->config.port ? handle->config.port : DOIP_TCP_PORT;
 
     /* Publish async callbacks to the globals consumed by the TCP transport layer */
     g_doip_client_connect_cb    = handle->config.on_client_connect;

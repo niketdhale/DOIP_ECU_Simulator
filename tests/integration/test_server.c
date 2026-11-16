@@ -782,6 +782,50 @@ void test_client_reports_diag_nack(void)
     client_destroy(c);
 }
 
+/* ── Test 20: Runtime port + logical address from DoIP_Config_t ─────── */
+
+void test_runtime_port_and_logical_address(void)
+{
+    /* Restart the server on another port with another ECU address */
+    g_server_running = 0;
+    pthread_join(g_server_thread, NULL);
+    DoIP_Destroy(g_server);
+    usleep(30000);
+
+    g_server = DoIP_Create();
+    DoIP_Config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.s3_server_timeout_ms = 5000;
+    cfg.ecu_identity         = &g_test_identity;
+    cfg.logical_address      = 0x2001;
+    cfg.port                 = DOIP_TCP_PORT + 1;
+    TEST_ASSERT_EQUAL_INT(0, DoIP_Init(g_server, &cfg));
+    g_server_running = 1;
+    pthread_create(&g_server_thread, NULL, server_thread_fn, NULL);
+    usleep(60000);
+
+    DoIP_Client_t *c = DoIP_Client_Create();
+    DoIP_ClientConfig_t ccfg = {
+        .tester_logical_addr = DOIP_TESTER_LOGICAL_ADDRESS,
+        .connect_timeout_ms = 2000, .response_timeout_ms = 2000, .routing_timeout_ms = 2000,
+    };
+    TEST_ASSERT_EQUAL_INT(DOIP_CLIENT_OK, DoIP_Client_Init(c, &ccfg));
+    TEST_ASSERT_EQUAL_INT(DOIP_CLIENT_OK, DoIP_Client_Connect(c, "127.0.0.1", DOIP_TCP_PORT + 1));
+    TEST_ASSERT_EQUAL_INT(DOIP_CLIENT_OK, DoIP_Client_ActivateRouting(c, 0x00, NULL));
+
+    uint8_t req[] = { UDS_SID_TESTER_PRESENT, 0x00 };
+    uint8_t resp[16];
+    uint16_t rlen = 0, src = 0;
+    /* New address answers, and is the source address of the response */
+    TEST_ASSERT_EQUAL_INT(DOIP_CLIENT_OK, DoIP_Client_SendDiagnostic(c, 0x2001, req, sizeof(req)));
+    TEST_ASSERT_EQUAL_INT(DOIP_CLIENT_OK, DoIP_Client_RecvDiagnostic(c, resp, sizeof(resp), &rlen, &src));
+    TEST_ASSERT_EQUAL_HEX16(0x2001, src);
+    /* Compiled-in default address is no longer this ECU */
+    TEST_ASSERT_EQUAL_INT(DOIP_CLIENT_ERR_NACK, DoIP_Client_Transact(
+        c, DOIP_ECU_LOGICAL_ADDRESS, req, sizeof(req), resp, sizeof(resp), &rlen));
+    client_destroy(c);
+}
+
 /* ── Entry point ───────────────────────────────────────────────────── */
 
 int main(void)
@@ -807,6 +851,7 @@ int main(void)
     RUN_TEST(test_suppressed_response_sends_ack_only);
     RUN_TEST(test_written_vin_appears_in_udp_response);
     RUN_TEST(test_client_reports_diag_nack);
+    RUN_TEST(test_runtime_port_and_logical_address);
 
     return UNITY_END();
 }

@@ -132,6 +132,13 @@ typedef struct {
                              uint16_t pt, const uint8_t *payload, uint32_t plen,
                              void *user_ctx);
 
+    /** ECU logical address; 0 = compiled-in DOIP_ECU_LOGICAL_ADDRESS.
+     *  Valid: 0x0001-0x0DFF, 0x1000-0x7FFF, 0x8000-0xDFFF. */
+    uint16_t logical_address;
+
+    /** UDP + TCP port; 0 = compiled-in DOIP_TCP_PORT (13400). */
+    uint16_t port;
+
 #if DOIP_ENABLE_TLS
     /** TLS server certificate, key, and optional CA bundle. */
     struct {

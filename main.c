@@ -3,6 +3,7 @@
 #include <signal.h>
 #include <unistd.h>
 #include <string.h>
+#include <getopt.h>
 #include "doip_api.h"
 #include "config/doip_uds_config.h"
 
@@ -41,8 +42,31 @@ static int my_uds_hook(uint8_t sid,
     return -1;  /* not handled — use built-in handler */
 }
 
+static void usage(const char *prog) {
+    printf("Usage: %s [options]\n"
+           "  --vin <17 chars>      Vehicle identification number\n"
+           "  --address <addr>      ECU logical address, e.g. 0x1003\n"
+           "  --port <port>         UDP + TCP port (default %u)\n"
+           "  --log-level <1-4>     1=WARN 2=INFO 3=DEBUG 4=VERBOSE (default 3)\n"
+           "  --log-file <path>     Also write the log to a file\n"
+           "  --help                Show this help\n",
+           prog, (unsigned)DOIP_TCP_PORT);
+}
+
+/* Parse an unsigned number (decimal or 0x hex) in [1, max]; exits on bad input. */
+static unsigned long parse_num(const char *opt, const char *s, unsigned long max) {
+    char *end;
+    unsigned long v = strtoul(s, &end, 0);
+    if (*s == '\0' || *end != '\0' || v == 0 || v > max) {
+        fprintf(stderr, "Invalid value for --%s: '%s' (expected 1..%lu)\n", opt, s, max);
+        exit(EXIT_FAILURE);
+    }
+    return v;
+}
+
 int main(int argc, char *argv[]) {
     signal(SIGINT, sigint_handler);
+    signal(SIGTERM, sigint_handler);
 
     /* 1. Create Instance */
     DoIP_Handle_t *handle = DoIP_Create();
@@ -73,10 +97,34 @@ int main(int argc, char *argv[]) {
     config.ecu_identity          = &identity;
     config.on_uds_request        = my_uds_hook;
 
-    /* Optional: override log file via --log-file <path> */
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--log-file") == 0 && i + 1 < argc) {
-            config.log_file_path = argv[++i];
+    /* Command-line overrides */
+    static const struct option opts[] = {
+        { "vin",       required_argument, NULL, 'v' },
+        { "address",   required_argument, NULL, 'a' },
+        { "port",      required_argument, NULL, 'p' },
+        { "log-level", required_argument, NULL, 'l' },
+        { "log-file",  required_argument, NULL, 'f' },
+        { "help",      no_argument,       NULL, 'h' },
+        { 0 }
+    };
+    int opt;
+    while ((opt = getopt_long(argc, argv, "", opts, NULL)) != -1) {
+        switch (opt) {
+            case 'v':
+                if (strlen(optarg) != DOIP_VIN_LENGTH) {
+                    fprintf(stderr, "Invalid --vin: must be exactly %u characters\n",
+                            (unsigned)DOIP_VIN_LENGTH);
+                    DoIP_Destroy(handle);
+                    return EXIT_FAILURE;
+                }
+                memcpy(identity.vin, optarg, DOIP_VIN_LENGTH);
+                break;
+            case 'a': config.logical_address = (uint16_t)parse_num("address", optarg, 0xFFFF); break;
+            case 'p': config.port            = (uint16_t)parse_num("port", optarg, 65535);     break;
+            case 'l': config.log_level       = (uint8_t)parse_num("log-level", optarg, 4);     break;
+            case 'f': config.log_file_path   = optarg; break;
+            case 'h': usage(argv[0]); DoIP_Destroy(handle); return EXIT_SUCCESS;
+            default:  usage(argv[0]); DoIP_Destroy(handle); return EXIT_FAILURE;
         }
     }
 

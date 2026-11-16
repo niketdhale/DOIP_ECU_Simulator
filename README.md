@@ -276,6 +276,10 @@ make test-alive && ./test-alive-bin
 # Default build (all features off):
 ./doip_ecu_sim
 
+# Override identity / addressing without recompiling:
+./doip_ecu_sim --vin WAUZZZ8V0JA000001 --address 0x2002 --port 14400 --log-level 2
+./doip_ecu_sim --help
+
 # With TLS:
 make clean && make DOIP_TLS=1
 ./doip_ecu_sim   # configure cert/key via DoIP_Config_t::tls in main.c

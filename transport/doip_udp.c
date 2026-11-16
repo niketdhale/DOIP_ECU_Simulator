@@ -44,7 +44,7 @@ static socklen_t               g_mcast_addr_len = 0;
 static void fill_announce(doip_vehicle_announce_t *a) {
     memset(a, 0, sizeof(*a));
     memcpy(a->vin, g_identity.vin, DOIP_VIN_LENGTH);
-    a->logical_address = htons(DOIP_ECU_LOGICAL_ADDRESS);
+    a->logical_address = htons(g_doip_ecu_logical_addr);
     memcpy(a->eid, g_identity.eid, DOIP_EID_LENGTH);
     memcpy(a->gid, g_identity.gid, DOIP_GID_LENGTH);
     a->further_action  = g_identity.further_action;
@@ -106,7 +106,7 @@ int doip_udp_init(void) {
     memset(&local6, 0, sizeof(local6));
     local6.sin6_family = AF_INET6;
     local6.sin6_addr   = in6addr_any;
-    local6.sin6_port   = htons(DOIP_UDP_PORT);
+    local6.sin6_port   = htons(g_doip_port);
     if (bind(g_udp_sock, (struct sockaddr *)&local6, sizeof(local6)) < 0) {
         LOG_ERROR(DOIP_LOG_MODULE_UDP, "bind (IPv6) failed: %s", strerror(errno));
         close(g_udp_sock); g_udp_sock = -1; return -2;
@@ -128,7 +128,7 @@ int doip_udp_init(void) {
     struct sockaddr_in6 *mcast6 = (struct sockaddr_in6 *)&g_mcast_addr;
     memset(mcast6, 0, sizeof(*mcast6));
     mcast6->sin6_family = AF_INET6;
-    mcast6->sin6_port   = htons(DOIP_UDP_PORT);
+    mcast6->sin6_port   = htons(g_doip_port);
     inet_pton(AF_INET6, DOIP_IPV6_MULTICAST_ADDR, &mcast6->sin6_addr);
     g_mcast_addr_len = sizeof(struct sockaddr_in6);
 
@@ -147,7 +147,7 @@ int doip_udp_init(void) {
     memset(&local, 0, sizeof(local));
     local.sin_family      = AF_INET;
     local.sin_addr.s_addr = INADDR_ANY;
-    local.sin_port        = htons(DOIP_UDP_PORT);
+    local.sin_port        = htons(g_doip_port);
     if (bind(g_udp_sock, (struct sockaddr *)&local, sizeof(local)) < 0) {
         LOG_ERROR(DOIP_LOG_MODULE_UDP, "bind failed: %s", strerror(errno));
         close(g_udp_sock); g_udp_sock = -1; return -2;
@@ -168,7 +168,7 @@ int doip_udp_init(void) {
     struct sockaddr_in *mcast4 = (struct sockaddr_in *)&g_mcast_addr;
     memset(mcast4, 0, sizeof(*mcast4));
     mcast4->sin_family = AF_INET;
-    mcast4->sin_port   = htons(DOIP_UDP_PORT);
+    mcast4->sin_port   = htons(g_doip_port);
     inet_pton(AF_INET, DOIP_MULTICAST_ADDR, &mcast4->sin_addr);
     g_mcast_addr_len = sizeof(struct sockaddr_in);
 
@@ -179,7 +179,7 @@ int doip_udp_init(void) {
 
     LOG_INFO(DOIP_LOG_MODULE_UDP,
              "UDP socket initialized on port %d (IPv6=%s)",
-             DOIP_UDP_PORT, DOIP_ENABLE_IPV6 ? "yes" : "no");
+             g_doip_port, DOIP_ENABLE_IPV6 ? "yes" : "no");
     return 0;
 }
 

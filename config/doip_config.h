@@ -139,6 +139,11 @@ typedef int  (*DoIP_FrameReceivedCb)   (int client_fd, uint16_t pt,
                                          const uint8_t *payload, uint32_t plen,
                                          void *user_ctx);
 
+/* Runtime ECU logical address and UDP/TCP port (set by DoIP_Init from
+ * DoIP_Config_t; default to DOIP_ECU_LOGICAL_ADDRESS / DOIP_TCP_PORT). */
+extern uint16_t                 g_doip_ecu_logical_addr;
+extern uint16_t                 g_doip_port;
+
 extern DoIP_RxIndication        g_doip_rx_cb;
 extern DoIP_TxConfirmation      g_doip_tx_cb;
 extern DoIP_ClientConnectCb     g_doip_client_connect_cb;
