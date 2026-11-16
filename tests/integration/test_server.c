@@ -28,6 +28,7 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <stdbool.h>
+#include <stdatomic.h>
 #include <time.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -1051,6 +1052,147 @@ void test_server_survives_disconnect_during_responses(void)
     client_destroy(c);
 }
 
+/* ── Callbacks and announcements ───────────────────────────────────── */
+
+/** Replace the running server by one started with @p cfg. */
+static void restart_server(const DoIP_Config_t *cfg)
+{
+    g_server_running = 0;
+    pthread_join(g_server_thread, NULL);
+    DoIP_Destroy(g_server);
+    usleep(30000);
+
+    g_server = DoIP_Create();
+    TEST_ASSERT_EQUAL_INT(0, DoIP_Init(g_server, cfg));
+    g_server_running = 1;
+    pthread_create(&g_server_thread, NULL, server_thread_fn, NULL);
+    usleep(60000);
+}
+
+/* Written on the server thread, read by the test */
+static atomic_int s_state_calls, s_state_old, s_state_new;
+static atomic_int s_rx_calls, s_rx_last_pt, s_rx_announcements, s_ctx_matches;
+static int        s_cookie;
+
+static void on_state_change(uint8_t old_state, uint8_t new_state, void *ctx)
+{
+    atomic_store(&s_state_old, old_state);
+    atomic_store(&s_state_new, new_state);
+    if (ctx == &s_cookie) atomic_fetch_add(&s_ctx_matches, 1);
+    atomic_fetch_add(&s_state_calls, 1);
+}
+
+static void on_rx_message(uint16_t pt, const uint8_t *data, uint32_t len, void *ctx)
+{
+    (void)data; (void)len;
+    if (pt == DOIP_PT_VEHICLE_ANNOUNCE) atomic_fetch_add(&s_rx_announcements, 1);
+    atomic_store(&s_rx_last_pt, pt);
+    if (ctx == &s_cookie) atomic_fetch_add(&s_ctx_matches, 1);
+    atomic_fetch_add(&s_rx_calls, 1);
+}
+
+/* Test 26: on_state_change and on_rx_message fire, with the user context */
+void test_state_change_and_rx_message_callbacks(void)
+{
+    DoIP_Config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.s3_server_timeout_ms = 5000;
+    cfg.ecu_identity         = &g_test_identity;
+    cfg.on_state_change      = on_state_change;
+    cfg.on_rx_message        = on_rx_message;
+    cfg.user_context         = &s_cookie;
+    restart_server(&cfg);
+    atomic_store(&s_state_calls, 0); atomic_store(&s_rx_calls, 0);
+    atomic_store(&s_rx_announcements, 0); atomic_store(&s_ctx_matches, 0);
+
+    DoIP_Client_t *c = client_connect_and_activate();
+    TEST_ASSERT_NOT_NULL(c);
+    TEST_ASSERT_EQUAL_INT(1, atomic_load(&s_rx_calls));
+    TEST_ASSERT_EQUAL_HEX16(DOIP_PT_ROUTING_ACT_REQ, atomic_load(&s_rx_last_pt));
+    TEST_ASSERT_EQUAL_INT(0, atomic_load(&s_state_calls));
+
+    uint8_t resp[32];
+    uint16_t rlen = 0;
+    const uint8_t extended[]   = { UDS_SID_SESSION_CONTROL, UDS_SESSION_EXTENDED };
+    const uint8_t to_default[] = { UDS_SID_SESSION_CONTROL, UDS_SESSION_DEFAULT };
+    TEST_ASSERT_EQUAL_INT(DOIP_CLIENT_OK, DoIP_Client_Transact(
+        c, DOIP_ECU_LOGICAL_ADDRESS, extended, sizeof(extended), resp, sizeof(resp), &rlen));
+    TEST_ASSERT_EQUAL_INT(1, atomic_load(&s_state_calls));
+    TEST_ASSERT_EQUAL_HEX8(0x01, atomic_load(&s_state_old));      /* DOIP_STATE_IDLE         */
+    TEST_ASSERT_EQUAL_HEX8(0x04, atomic_load(&s_state_new));      /* DOIP_STATE_DIAG_SESSION */
+
+    TEST_ASSERT_EQUAL_INT(DOIP_CLIENT_OK, DoIP_Client_Transact(
+        c, DOIP_ECU_LOGICAL_ADDRESS, to_default, sizeof(to_default), resp, sizeof(resp), &rlen));
+    TEST_ASSERT_EQUAL_INT(2, atomic_load(&s_state_calls));
+    TEST_ASSERT_EQUAL_HEX8(0x04, atomic_load(&s_state_old));
+    TEST_ASSERT_EQUAL_HEX8(0x03, atomic_load(&s_state_new));      /* DOIP_STATE_ROUTING_ACTIVE */
+    TEST_ASSERT_EQUAL_INT(3, atomic_load(&s_rx_calls));
+    TEST_ASSERT_EQUAL_HEX16(DOIP_PT_DIAGNOSTIC_MSG, atomic_load(&s_rx_last_pt));
+    client_destroy(c);
+
+    /* UDP frames are reported as well */
+    uint8_t udp_resp[DOIP_HEADER_SIZE + 16];
+    TEST_ASSERT_GREATER_THAN_INT(0, (int)udp_exchange(DOIP_PROTOCOL_VERSION, DOIP_PT_ENTITY_STATUS_REQ,
+                                                      NULL, 0, udp_resp, sizeof(udp_resp)));
+    TEST_ASSERT_EQUAL_INT(4, atomic_load(&s_rx_calls));
+    TEST_ASSERT_EQUAL_HEX16(DOIP_PT_ENTITY_STATUS_REQ, atomic_load(&s_rx_last_pt));
+
+    /* ...but the server's own announcements, which it also receives, are not */
+    usleep(3 * DOIP_ANNOUNCE_INTERVAL_MS * 1000);
+    TEST_ASSERT_EQUAL_INT(0, atomic_load(&s_rx_announcements));
+    TEST_ASSERT_EQUAL_INT(4, atomic_load(&s_rx_calls));
+    TEST_ASSERT_EQUAL_INT_MESSAGE(6, atomic_load(&s_ctx_matches), "every call carried user_context");
+}
+
+#if !DOIP_ENABLE_IPV6   /* the IPv6 build announces to ff02::1 instead */
+
+/** Wait for a vehicle announcement on @p fd; returns its total length, or -1 on timeout. */
+static ssize_t recv_announcement(int fd, int timeout_ms, uint8_t *buf, size_t size)
+{
+    struct timeval tv = { .tv_sec = timeout_ms / 1000, .tv_usec = (timeout_ms % 1000) * 1000 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    return recv(fd, buf, size, 0);
+}
+
+/* Test 27: periodic vehicle announcements, and switching them off and on */
+void test_vehicle_announcements_and_runtime_toggle(void)
+{
+    /* The test configuration sends announcements to 127.0.0.1:<port>. A socket
+     * bound to exactly that address is a better match than the server's
+     * wildcard socket, so the announcements arrive here. */
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    int one = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    struct sockaddr_in lo = { .sin_family = AF_INET, .sin_port = htons(DOIP_UDP_PORT) };
+    inet_pton(AF_INET, "127.0.0.1", &lo.sin_addr);
+    TEST_ASSERT_EQUAL_INT(0, bind(fd, (struct sockaddr *)&lo, sizeof(lo)));
+    uint8_t buf[DOIP_HEADER_SIZE + 64];
+
+    /* The start-up burst is still running */
+    TEST_ASSERT_EQUAL_INT(DOIP_HEADER_SIZE + 33,
+                          (int)recv_announcement(fd, 3 * DOIP_ANNOUNCE_INTERVAL_MS, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL_HEX8(0x00, buf[2]);
+    TEST_ASSERT_EQUAL_HEX8(0x04, buf[3]);                                   /* PT 0x0004 */
+    TEST_ASSERT_EQUAL_MEMORY(g_test_identity.vin, buf + DOIP_HEADER_SIZE, DOIP_VIN_LENGTH);
+    TEST_ASSERT_EQUAL_HEX8(DOIP_ECU_LOGICAL_ADDRESS >> 8,   buf[DOIP_HEADER_SIZE + 17]);
+    TEST_ASSERT_EQUAL_HEX8(DOIP_ECU_LOGICAL_ADDRESS & 0xFF, buf[DOIP_HEADER_SIZE + 18]);
+
+    /* Off: the burst stops */
+    DoIP_EnablePeriodicAnnounce(g_server, false);
+    while (recv_announcement(fd, 50, buf, sizeof(buf)) > 0) { /* one may have been on its way */ }
+    TEST_ASSERT_LESS_THAN_INT(1, (int)recv_announcement(fd, 3 * DOIP_ANNOUNCE_INTERVAL_MS, buf, sizeof(buf)));
+
+    /* On: a complete new burst starts right away, and ends after DOIP_ANNOUNCE_COUNT_MAX */
+    DoIP_EnablePeriodicAnnounce(g_server, true);
+    TEST_ASSERT_EQUAL_INT(DOIP_HEADER_SIZE + 33,
+                          (int)recv_announcement(fd, DOIP_ANNOUNCE_INTERVAL_MS / 2, buf, sizeof(buf)));
+    int burst = 1;
+    while (recv_announcement(fd, 2 * DOIP_ANNOUNCE_INTERVAL_MS, buf, sizeof(buf)) > 0) burst++;
+    TEST_ASSERT_EQUAL_INT(DOIP_ANNOUNCE_COUNT_MAX, burst);
+    close(fd);
+}
+#endif /* !DOIP_ENABLE_IPV6 */
+
 #if DOIP_ENABLE_IPV6
 /* ── IPv6 build only: native IPv6 next to the IPv4-mapped path ───────
  * Every test above reaches the dual-stack server through 127.0.0.1; this
@@ -1143,6 +1285,10 @@ int main(void)
     RUN_TEST(test_fault_force_nack_drop_ack_drop_response);
     RUN_TEST(test_functional_addressing);
     RUN_TEST(test_server_survives_disconnect_during_responses);
+    RUN_TEST(test_state_change_and_rx_message_callbacks);
+#if !DOIP_ENABLE_IPV6
+    RUN_TEST(test_vehicle_announcements_and_runtime_toggle);
+#endif
 #if DOIP_ENABLE_IPV6
     RUN_TEST(test_ipv6_native_tcp_and_udp);
 #endif

@@ -49,17 +49,25 @@ typedef struct {
     /* Event Callbacks (Optional) */
 
     /**
-     * @brief Called when the FSM state changes (e.g., IDLE -> ROUTING_ACTIVE).
-     * @param[in] old_state  Previous state enum value.
-     * @param[in] new_state  New state enum value.
+     * @brief Called when the FSM state (DoIP_State_t in state/doip_fsm.h) changes.
+     *
+     * The FSM follows the UDS session: IDLE or ROUTING_ACTIVE -> DIAG_SESSION when
+     * a tester enters a non-default session, -> ROUTING_ACTIVE when it returns to
+     * the default session or resets the ECU, -> IDLE when S3 expires.
+     * Runs inside DoIP_Tick(); do not call this handle's API from it.
+     * @param[in] old_state  Previous state.
+     * @param[in] new_state  New state.
      * @param[in] user_ctx   Context pointer passed in DoIP_Config_t::user_context.
      */
     void (*on_state_change)(uint8_t old_state, uint8_t new_state, void *user_ctx);
 
     /**
-     * @brief Called when a DoIP message is received.
+     * @brief Called for every complete DoIP frame received over TCP or UDP,
+     *        before it is processed (vehicle announcements are not reported).
+     *
+     * Runs inside DoIP_Tick(); do not call this handle's API from it.
      * @param[in] payload_type  DoIP payload type (e.g., 0x8001 for Diagnostic Message).
-     * @param[in] data          Payload data pointer.
+     * @param[in] data          Payload data pointer (valid only during the call).
      * @param[in] len           Payload length in bytes.
      * @param[in] user_ctx      Context pointer passed in DoIP_Config_t::user_context.
      */
@@ -227,8 +235,13 @@ DOIP_API void DoIP_SetLogLevel(DoIP_Handle_t *handle, uint8_t level);
 /**
  * @brief Enable or disable periodic UDP Vehicle Announcements at runtime.
  *
+ * Announcements are on by default (DOIP_ENABLE_PERIODIC_ANNOUNCE): a burst of
+ * DOIP_ANNOUNCE_COUNT_MAX, DOIP_ANNOUNCE_INTERVAL_MS apart, after DoIP_Init().
+ * Disabling stops a running burst; enabling starts a new complete burst on the
+ * next DoIP_Tick(). May be called before DoIP_Init() to start silent.
+ *
  * @param[in,out] handle  Handle returned by DoIP_Create().
- * @param[in]     enable  @c true to start announcements, @c false to stop.
+ * @param[in]     enable  @c true to announce (again), @c false to stop.
  */
 DOIP_API void DoIP_EnablePeriodicAnnounce(DoIP_Handle_t *handle, bool enable);
 

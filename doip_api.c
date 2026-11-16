@@ -83,6 +83,7 @@ DoIP_Handle_t* DoIP_Create(void) {
     handle->config = g_default_config;
     handle->tcp_fd = -1;
     handle->udp_fd = -1;
+    handle->announce_enabled = DOIP_ENABLE_PERIODIC_ANNOUNCE;
     pthread_mutex_init(&handle->lock, NULL);
     return handle;
 }
@@ -190,6 +191,12 @@ void DoIP_SetLogLevel(DoIP_Handle_t *handle, uint8_t level) {
 }
 
 void DoIP_EnablePeriodicAnnounce(DoIP_Handle_t *handle, bool enable) {
-    (void)handle; (void)enable;
-    /* TODO: forward to doip_udp layer when runtime toggle is needed */
+    if (!handle) return;
+    pthread_mutex_lock(&handle->lock);
+    handle->announce_enabled = enable;
+    if (enable) {                          /* a fresh burst, starting on the next tick */
+        handle->announcement_count = 0;
+        handle->last_announce_ms   = 0;
+    }
+    pthread_mutex_unlock(&handle->lock);
 }

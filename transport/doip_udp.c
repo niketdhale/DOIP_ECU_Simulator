@@ -190,8 +190,15 @@ int doip_udp_poll(DoIP_Handle_t *h) {
     if (doip_deserialize_header(rx_buf, (size_t)total, &hdr) < 0) return 0;
     if (total < (ssize_t)(DOIP_HEADER_SIZE + hdr.payload_length)) return 0;
 
+    /* Vehicle announcements are not for us: our own come back through the
+     * multicast group, and other entities' are of no interest to an ECU. */
+    if (hdr.payload_type == DOIP_PT_VEHICLE_ANNOUNCE) return 0;
+
     LOG_DEBUG(DOIP_LOG_MODULE_UDP,
               "[RX] PT=0x%04X, Len=%u", hdr.payload_type, hdr.payload_length);
+    if (h->config.on_rx_message)
+        h->config.on_rx_message(hdr.payload_type, rx_buf + DOIP_HEADER_SIZE,
+                                hdr.payload_length, h->config.user_context);
 
     const uint8_t *pl = rx_buf + DOIP_HEADER_SIZE;
     /* Vehicle ID Request: plain, or filtered by EID / VIN — only answer
@@ -237,7 +244,7 @@ int doip_udp_poll(DoIP_Handle_t *h) {
 }
 
 void doip_udp_tick(DoIP_Handle_t *h, uint32_t now_ms) {
-    if (!DOIP_ENABLE_PERIODIC_ANNOUNCE) return;
+    if (!h->announce_enabled) return;
     if (h->announcement_count >= DOIP_ANNOUNCE_COUNT_MAX) return;
     if (now_ms - h->last_announce_ms < DOIP_ANNOUNCE_INTERVAL_MS) return;
 

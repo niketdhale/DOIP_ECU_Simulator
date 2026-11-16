@@ -50,6 +50,9 @@ static bool fsm_transition(DoIP_Handle_t *h, DoIP_State_t new_state) {
     h->fsm.current_state = new_state;
     h->fsm.state_entry_time_ms = get_time_ms();
     LOG_INFO(DOIP_LOG_MODULE_FSM, "State: %d -> %d", h->fsm.previous_state, new_state);
+    if (h->config.on_state_change)
+        h->config.on_state_change((uint8_t)h->fsm.previous_state, (uint8_t)new_state,
+                                  h->config.user_context);
     return true;
 }
 

@@ -200,6 +200,10 @@ next_frame:
 
     uint8_t *pl = client->rx_buf + DOIP_HEADER_SIZE;
 
+    if (h->config.on_rx_message)
+        h->config.on_rx_message(hdr.payload_type, pl, hdr.payload_length,
+                                h->config.user_context);
+
     /* --- Step 5: Optional application frame intercept hook --- */
     if (h->config.on_frame_received) {
         int rc = h->config.on_frame_received(client->fd, hdr.payload_type,

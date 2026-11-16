@@ -63,7 +63,9 @@
 #ifndef DOIP_TCP_PORT
 #define DOIP_TCP_PORT               13400U
 #endif
-#define DOIP_MULTICAST_ADDR         "224.0.0.1"
+#ifndef DOIP_MULTICAST_ADDR
+#define DOIP_MULTICAST_ADDR         "224.0.0.1"   /* IPv4 destination of vehicle announcements */
+#endif
 #define DOIP_BROADCAST_ADDR         "255.255.255.255"
 
 #define DOIP_MAX_PAYLOAD_SIZE       4096U
@@ -76,7 +78,9 @@
 #define DOIP_ENABLE_PERIODIC_ANNOUNCE  true
 
 /* Interval between announcements (milliseconds) */
+#ifndef DOIP_ANNOUNCE_INTERVAL_MS
 #define DOIP_ANNOUNCE_INTERVAL_MS   2000U /* (ISO default 2-5s) */
+#endif
 
 /* Maximum number of announcements to send at startup. 
    Set to 0 to disable, or 5 to send exactly 5 times then stop. */

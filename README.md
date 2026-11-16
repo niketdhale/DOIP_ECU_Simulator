@@ -287,13 +287,13 @@ make test-tsan
 | Frame unit tests | `make test` | 10 |
 | UDS unit tests | `make test` | 36 |
 | ISO-TP unit tests | `make test` | 14 |
-| Server integration tests (in-process server, port 23400) | `make test` | 25 |
+| Server integration tests (in-process server, port 23400) | `make test` | 27 |
 | Two instances in one process (ports 23410 / 23411); also `make test-tsan` | `make test` | 6 |
 | End-to-end tests of the binary (port 24400) | `make test` | 10 |
 | Alive-check timing tests | `make test-alive` | 3 |
 | ISO-TP server integration tests | `make test-features` | 5 |
 | TLS server integration tests | `make test-features` | 6 |
-| Integration suite against the IPv6 dual-stack server | `make test-features` | 26 |
+| Integration suite against the IPv6 dual-stack server | `make test-features` | 27 |
 
 `make test` always tests the default configuration (plus `DOIP_2019=1` if given); the `DOIP_TLS` / `DOIP_IPV6` / `DOIP_ISOTP` flags only affect the simulator and library build. The feature code paths are covered by `make test-features`, where each test binary is built with its own define.
 
@@ -409,8 +409,12 @@ typedef struct {
 
     /* ── State / message callbacks ─────────────────────────────── */
     void (*on_state_change)(uint8_t old, uint8_t new, void *ctx);
+                          // FSM follows the UDS session: -> DIAG_SESSION on a
+                          // non-default session, -> ROUTING_ACTIVE back in the
+                          // default session, -> IDLE when S3 expires
     void (*on_rx_message)(uint16_t pt, const uint8_t *data,
                           uint32_t len, void *ctx);
+                          // every DoIP frame received over TCP or UDP
 
     /* ── ECU identity (NULL = compile-time defaults) ────────────── */
     const DoIP_EcuIdentity_t *ecu_identity;

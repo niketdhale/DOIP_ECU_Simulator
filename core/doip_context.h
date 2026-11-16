@@ -38,6 +38,7 @@ struct DoIP_Context {
 
     /* ----- transport/doip_udp.c ----- */
     int                     udp_fd;     /* -1 while closed                                     */
+    bool                    announce_enabled;   /* DoIP_EnablePeriodicAnnounce()               */
     uint32_t                last_announce_ms;
     uint32_t                announcement_count;
     struct sockaddr_storage mcast_addr; /* Where vehicle announcements are sent                */
