@@ -761,6 +761,27 @@ void test_written_vin_appears_in_udp_response(void)
                               (const uint8_t*)g_test_identity.vin, 17, resp, sizeof(resp)));
 }
 
+/* ── Test 19: Client reports a Diagnostic NACK instead of timing out ── */
+
+void test_client_reports_diag_nack(void)
+{
+    DoIP_Client_t *c = client_connect_and_activate();
+    TEST_ASSERT_NOT_NULL(c);
+    uint8_t req[] = { UDS_SID_TESTER_PRESENT, 0x00 };
+    uint8_t resp[16];
+    uint16_t rlen = 0;
+
+    TEST_ASSERT_EQUAL_INT(DOIP_CLIENT_ERR_NACK, DoIP_Client_Transact(
+        c, 0x2222 /* not this ECU */, req, sizeof(req), resp, sizeof(resp), &rlen));
+    TEST_ASSERT_EQUAL_HEX8(0x03, DoIP_Client_GetLastNackCode(c));
+
+    /* The connection is still usable afterwards */
+    TEST_ASSERT_EQUAL_INT(DOIP_CLIENT_OK, DoIP_Client_Transact(
+        c, DOIP_ECU_LOGICAL_ADDRESS, req, sizeof(req), resp, sizeof(resp), &rlen));
+    TEST_ASSERT_EQUAL_HEX8(UDS_SID_TESTER_PRESENT_RES, resp[0]);
+    client_destroy(c);
+}
+
 /* ── Entry point ───────────────────────────────────────────────────── */
 
 int main(void)
@@ -785,6 +806,7 @@ int main(void)
     RUN_TEST(test_coalesced_frames_all_processed);
     RUN_TEST(test_suppressed_response_sends_ack_only);
     RUN_TEST(test_written_vin_appears_in_udp_response);
+    RUN_TEST(test_client_reports_diag_nack);
 
     return UNITY_END();
 }

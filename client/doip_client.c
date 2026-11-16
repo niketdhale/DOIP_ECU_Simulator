@@ -30,6 +30,7 @@ struct DoIP_ClientContext {
     DoIP_ClientConfig_t  config;
     uint16_t             tester_la;
     uint16_t             peer_ecu_la;       /* ECU address learned from routing activation response */
+    uint8_t              last_nack_code;    /* Code of the most recent Generic / Diagnostic NACK */
     char                 server_ip[INET6_ADDRSTRLEN]; /* Wide enough for IPv4 or IPv6 */
     uint16_t             server_port;
     uint8_t              rx_payload[DOIP_MAX_PAYLOAD_SIZE];  /* scratch recv buffer */
@@ -391,6 +392,14 @@ DoIP_ClientStatus_t DoIP_Client_RecvDiagnostic(DoIP_Client_t *client,
                 LOG_DEBUG(DOIP_LOG_MODULE_CLIENT, "Alive Check — responded");
                 continue;
 
+            case DOIP_PT_DIAGNOSTIC_NACK:   /* SA(2) TA(2) code(1) */
+            case DOIP_PT_GENERIC_NACK:      /* code(1) */
+                client->last_nack_code = (rx_hdr.payload_length == 0) ? 0xFF :
+                    client->rx_payload[rx_hdr.payload_length >= 5U ? 4 : 0];
+                LOG_WARN(DOIP_LOG_MODULE_CLIENT, "Request rejected: PT=0x%04X, NACK code=0x%02X",
+                         rx_hdr.payload_type, client->last_nack_code);
+                return DOIP_CLIENT_ERR_NACK;
+
             case DOIP_PT_DIAGNOSTIC_MSG: {
                 if (rx_hdr.payload_length < 4U) return DOIP_CLIENT_ERR_IO;
                 uint16_t uds_len = (uint16_t)(rx_hdr.payload_length - 4U);
@@ -430,6 +439,10 @@ DoIP_ClientStatus_t DoIP_Client_Transact(DoIP_Client_t *client,
 bool DoIP_Client_IsConnected(const DoIP_Client_t *client) {
     return client && client->tcp_fd >= 0 &&
            client->state >= DOIP_CLI_STATE_CONNECTED;
+}
+
+uint8_t DoIP_Client_GetLastNackCode(const DoIP_Client_t *client) {
+    return client ? client->last_nack_code : 0xFF;
 }
 
 bool DoIP_Client_IsRoutingActive(const DoIP_Client_t *client) {

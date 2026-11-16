@@ -401,6 +401,8 @@ bool DoIP_Client_IsConnected(const DoIP_Client_t *c);
 bool DoIP_Client_IsRoutingActive(const DoIP_Client_t *c);
 ```
 
+`DoIP_Client_GetLastNackCode(c)` returns the code behind an `ERR_NACK` (for example `0x03` = unknown target address).
+
 Return codes: `DOIP_CLIENT_OK (0)`, `ERR_PARAM (-1)`, `ERR_SOCKET (-2)`, `ERR_TIMEOUT (-3)`, `ERR_NACK (-4)`, `ERR_REJECTED (-5)`, `ERR_NOT_READY (-6)`, `ERR_IO (-7)`
 
 ---
