@@ -480,6 +480,70 @@ void test_security_access_sequence_and_format_errors(void)
     TEST_ASSERT_EQUAL_HEX8(UDS_NRC_SERVICE_NOT_SUPPORTED_IN_SESSION, s_resp[2]);
 }
 
+/* ── DTCs (0x19 / 0x14) — default table: 010000/09, 030100/08, C07300/04 ── */
+
+void test_dtc_count_and_list_by_status_mask(void)
+{
+    UdsClientContext_t ctx = make_ctx();
+    uint8_t count_req[] = { UDS_SID_READ_DTC_INFO, 0x01, 0x08 };   /* confirmed */
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, count_req, sizeof(count_req)));
+    const uint8_t count_exp[] = { 0x59, 0x01, 0xFF, 0x01, 0x00, 0x02 };
+    TEST_ASSERT_EQUAL_UINT16(sizeof(count_exp), s_rlen);
+    TEST_ASSERT_EQUAL_MEMORY(count_exp, s_resp, sizeof(count_exp));
+
+    uint8_t list_req[] = { UDS_SID_READ_DTC_INFO, 0x02, 0x08 };
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, list_req, sizeof(list_req)));
+    const uint8_t list_exp[] = { 0x59, 0x02, 0xFF, 0x01, 0x00, 0x00, 0x09, 0x03, 0x01, 0x00, 0x08 };
+    TEST_ASSERT_EQUAL_UINT16(sizeof(list_exp), s_rlen);
+    TEST_ASSERT_EQUAL_MEMORY(list_exp, s_resp, sizeof(list_exp));
+
+    uint8_t all_req[] = { UDS_SID_READ_DTC_INFO, 0x0A };
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, all_req, sizeof(all_req)));
+    TEST_ASSERT_EQUAL_UINT16(3 + 3 * 4, s_rlen);
+}
+
+void test_dtc_clear_single_and_all(void)
+{
+    UdsClientContext_t ctx = make_ctx();
+    uint8_t count_any[] = { UDS_SID_READ_DTC_INFO, 0x01, 0xFF };
+
+    uint8_t clear_one[] = { UDS_SID_CLEAR_DTC, 0x03, 0x01, 0x00 };
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, clear_one, sizeof(clear_one)));
+    TEST_ASSERT_EQUAL_UINT16(1, s_rlen);
+    TEST_ASSERT_EQUAL_HEX8(UDS_SID_CLEAR_DTC_RES, s_resp[0]);
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, count_any, sizeof(count_any)));
+    TEST_ASSERT_EQUAL_HEX8(2, s_resp[5]);
+
+    uint8_t clear_all[] = { UDS_SID_CLEAR_DTC, 0xFF, 0xFF, 0xFF };
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, clear_all, sizeof(clear_all)));
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, count_any, sizeof(count_any)));
+    TEST_ASSERT_EQUAL_HEX8(0, s_resp[5]);
+
+    /* Supported DTCs are still listed after a clear, with status 0 */
+    uint8_t all_req[] = { UDS_SID_READ_DTC_INFO, 0x0A };
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, all_req, sizeof(all_req)));
+    TEST_ASSERT_EQUAL_UINT16(3 + 3 * 4, s_rlen);
+    TEST_ASSERT_EQUAL_HEX8(0x00, s_resp[6]);
+}
+
+void test_dtc_negative_responses(void)
+{
+    UdsClientContext_t ctx = make_ctx();
+    uint8_t bad_sub[]   = { UDS_SID_READ_DTC_INFO, 0x55, 0xFF };
+    uint8_t no_mask[]   = { UDS_SID_READ_DTC_INFO, 0x02 };
+    uint8_t unknown[]   = { UDS_SID_CLEAR_DTC, 0x12, 0x34, 0x56 };
+    uint8_t short_clr[] = { UDS_SID_CLEAR_DTC, 0xFF, 0xFF };
+
+    TEST_ASSERT_EQUAL_INT(-1, process(&ctx, bad_sub, sizeof(bad_sub)));
+    TEST_ASSERT_EQUAL_HEX8(UDS_NRC_SUB_FUNCTION_NOT_SUPPORTED, s_resp[2]);
+    TEST_ASSERT_EQUAL_INT(-1, process(&ctx, no_mask, sizeof(no_mask)));
+    TEST_ASSERT_EQUAL_HEX8(UDS_NRC_INCORRECT_MESSAGE_LENGTH, s_resp[2]);
+    TEST_ASSERT_EQUAL_INT(-1, process(&ctx, unknown, sizeof(unknown)));
+    TEST_ASSERT_EQUAL_HEX8(UDS_NRC_REQUEST_OUT_OF_RANGE, s_resp[2]);
+    TEST_ASSERT_EQUAL_INT(-1, process(&ctx, short_clr, sizeof(short_clr)));
+    TEST_ASSERT_EQUAL_HEX8(UDS_NRC_INCORRECT_MESSAGE_LENGTH, s_resp[2]);
+}
+
 /* ── ECU Reset details ────────────────────────────────────────────── */
 
 void test_ecu_reset_returns_to_default_session(void)
@@ -659,6 +723,9 @@ int main(void)
     RUN_TEST(test_security_access_unlocks_write);
     RUN_TEST(test_security_access_wrong_key_and_lockout);
     RUN_TEST(test_security_access_sequence_and_format_errors);
+    RUN_TEST(test_dtc_count_and_list_by_status_mask);
+    RUN_TEST(test_dtc_clear_single_and_all);
+    RUN_TEST(test_dtc_negative_responses);
     RUN_TEST(test_ecu_reset_returns_to_default_session);
     RUN_TEST(test_ecu_reset_invalid_requests);
     RUN_TEST(test_read_multiple_dids);

@@ -51,12 +51,20 @@ All four transport extensions are **disabled by default** and have zero impact o
 ### Supported UDS Services (ISO 14229)
 
 - `0x10` Session Control
-- `0x11` ECU Reset
-- `0x22` Read Data By Identifier (VIN, SW Version, Serial Number…)
-- `0x2E` Write Data By Identifier — VIN (`0xF190`, exactly 17 bytes), system name (`0xF186`), serial number (`0xF18C`); requires a non-default session (NRC `0x7F` otherwise). A written VIN is also used in UDP vehicle announcements and ID responses
+- `0x11` ECU Reset — reset types `0x01`–`0x03`; returns the client to the default session
+- `0x14` Clear Diagnostic Information — `FFFFFF` clears all DTCs, or one specific DTC
+- `0x19` Read DTC Information — `01` count by status mask, `02` list by status mask, `0A` all supported; DTC table in `UDS_DTC_TABLE`
+- `0x22` Read Data By Identifier (VIN, SW Version, System Name, Serial Number) — several DIDs per request
+- `0x27` Security Access level 1 — `27 01` returns a 4-byte seed, `27 02` expects `seed XOR UDS_SECURITY_KEY_MASK`; three wrong keys lock the client out for `UDS_SECURITY_LOCKOUT_MS`
+- `0x2E` Write Data By Identifier — VIN (`0xF190`, exactly 17 bytes), system name (`0xF186`), serial number (`0xF18C`). A written VIN is also used in UDP vehicle announcements and ID responses
 - `0x31` Routine Control
 - `0x3E` Tester Present
 - Suppress-positive-response bit (`0x80` in the sub-function byte) honoured for sub-function services: the service runs, the DoIP ACK is sent, and no positive UDS response follows (e.g. `3E 80`); negative responses are still sent
+- Session gating: `0x27`, `0x28`, `0x2E`, `0x31`, `0x34`, `0x36`, `0x37`, `0x85` answer NRC `0x7F` in the default session (`UDS_NON_DEFAULT_SESSION_SIDS`)
+- Security gating: `0x2E` answers NRC `0x33` until Security Access is unlocked (`UDS_SECURED_SIDS`)
+
+Typical write sequence: `10 03` → `27 01` → `27 02 <key>` → `2E F1 90 <17-byte VIN>`.
+
 - Auto-response mode for unsupported SIDs
 
 ---

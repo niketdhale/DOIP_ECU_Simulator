@@ -42,6 +42,8 @@
 #define UDS_SID_READ_DATA_BY_ID_RES     0x62
 #define UDS_SID_READ_DTC_INFO           0x19
 #define UDS_SID_READ_DTC_INFO_RES       0x59
+#define UDS_SID_CLEAR_DTC               0x14
+#define UDS_SID_CLEAR_DTC_RES           0x54
 #define UDS_SID_WRITE_DATA_BY_ID        0x2E
 #define UDS_SID_WRITE_DATA_BY_ID_RES    0x6E
 #define UDS_SID_ROUTINE_CONTROL         0x31
@@ -103,6 +105,16 @@
 #define UDS_SECURITY_LOCKOUT_MS         10000   /* Lockout duration after max attempts  */
 /* SIDs answered with NRC 0x33 (securityAccessDenied) until unlocked */
 #define UDS_SECURED_SIDS                0x2E
+
+/* ===== Simulated DTC memory (0x19 ReadDTCInformation / 0x14 ClearDiagnosticInformation) =====
+ * { 3-byte DTC, status byte } pairs restored at every DoIP_Init().
+ * Status bits: 0x01 testFailed, 0x04 pendingDTC, 0x08 confirmedDTC. */
+#define UDS_SUPPORT_DTC                 true
+#define UDS_DTC_STATUS_AVAILABILITY_MASK 0xFF
+#define UDS_DTC_TABLE \
+    { 0x010000, 0x09 },   /* P0100 mass air flow circuit — failed + confirmed */ \
+    { 0x030100, 0x08 },   /* P0301 cylinder 1 misfire    — confirmed          */ \
+    { 0xC07300, 0x04 }    /* U0073 CAN bus off           — pending            */
 
 /* ===== Timing Parameters ===== */
 #define UDS_P2_SERVER_MS                50

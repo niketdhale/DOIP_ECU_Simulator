@@ -128,6 +128,64 @@ static int handle_write_data_by_id(UdsClientContext_t *ctx, const uint8_t *req, 
     return 0;
 }
 
+#if UDS_SUPPORT_DTC
+typedef struct { uint32_t dtc; uint8_t status; } uds_dtc_t;
+static const uds_dtc_t g_dtc_defaults[] = { UDS_DTC_TABLE };
+static uds_dtc_t       g_dtcs[sizeof(g_dtc_defaults) / sizeof(g_dtc_defaults[0])];
+#define DTC_COUNT (sizeof(g_dtcs) / sizeof(g_dtcs[0]))
+
+/* 0x19: 01 = count by status mask, 02 = list by status mask, 0A = all supported */
+static int handle_read_dtc_info(UdsClientContext_t *ctx, const uint8_t *req, uint16_t req_len, uint8_t *res, uint16_t *res_len) {
+    (void)ctx;
+    const uint8_t sid = UDS_SID_READ_DTC_INFO;
+    if (req_len < 2) return neg(res, res_len, sid, UDS_NRC_INCORRECT_MESSAGE_LENGTH);
+    uint8_t sub = req[1] & 0x7F;
+    if (sub != 0x01 && sub != 0x02 && sub != 0x0A)
+        return neg(res, res_len, sid, UDS_NRC_SUB_FUNCTION_NOT_SUPPORTED);
+    if (req_len != (sub == 0x0A ? 2 : 3))
+        return neg(res, res_len, sid, UDS_NRC_INCORRECT_MESSAGE_LENGTH);
+
+    uint8_t  mask  = (sub == 0x0A) ? 0xFF : req[2];
+    uint16_t out   = 3, count = 0;
+    res[0] = UDS_SID_READ_DTC_INFO_RES; res[1] = sub; res[2] = UDS_DTC_STATUS_AVAILABILITY_MASK;
+    for (size_t i = 0; i < DTC_COUNT; i++) {
+        if (sub != 0x0A && (g_dtcs[i].status & mask) == 0) continue;
+        count++;
+        if (sub == 0x01) continue;
+        if (out + 4U > UDS_MAX_RESPONSE_LEN) return neg(res, res_len, sid, UDS_NRC_RESPONSE_TOO_LONG);
+        res[out++] = (uint8_t)(g_dtcs[i].dtc >> 16);
+        res[out++] = (uint8_t)(g_dtcs[i].dtc >> 8);
+        res[out++] = (uint8_t)g_dtcs[i].dtc;
+        res[out++] = g_dtcs[i].status;
+    }
+    if (sub == 0x01) {
+        res[out++] = 0x01;                    /* DTC format: ISO 14229-1 */
+        res[out++] = (uint8_t)(count >> 8);
+        res[out++] = (uint8_t)count;
+    }
+    *res_len = out;
+    return 0;
+}
+
+/* 0x14: FFFFFF clears every DTC, otherwise the one matching DTC */
+static int handle_clear_dtc(UdsClientContext_t *ctx, const uint8_t *req, uint16_t req_len, uint8_t *res, uint16_t *res_len) {
+    (void)ctx;
+    if (req_len != 4) return neg(res, res_len, UDS_SID_CLEAR_DTC, UDS_NRC_INCORRECT_MESSAGE_LENGTH);
+    uint32_t group = ((uint32_t)req[1] << 16) | ((uint32_t)req[2] << 8) | req[3];
+    bool found = false;
+    for (size_t i = 0; i < DTC_COUNT; i++) {
+        if (group != 0xFFFFFF && group != g_dtcs[i].dtc) continue;
+        g_dtcs[i].status = 0x00;
+        found = true;
+    }
+    if (!found && group != 0xFFFFFF)
+        return neg(res, res_len, UDS_SID_CLEAR_DTC, UDS_NRC_REQUEST_OUT_OF_RANGE);
+    LOG_INFO(DOIP_LOG_MODULE_UDS, "DTCs cleared (group 0x%06X)", (unsigned)group);
+    res[0] = UDS_SID_CLEAR_DTC_RES; *res_len = 1;
+    return 0;
+}
+#endif /* UDS_SUPPORT_DTC */
+
 static void put_be32(uint8_t *p, uint32_t v) {
     p[0] = (uint8_t)(v >> 24); p[1] = (uint8_t)(v >> 16); p[2] = (uint8_t)(v >> 8); p[3] = (uint8_t)v;
 }
@@ -226,6 +284,10 @@ static const struct { uint8_t sid; uint8_t res_id; int (*handler)(UdsClientConte
 #if UDS_SUPPORT_WRITE_DATA
     { UDS_SID_WRITE_DATA_BY_ID, UDS_SID_WRITE_DATA_BY_ID_RES, handle_write_data_by_id, true },
 #endif
+#if UDS_SUPPORT_DTC
+    { UDS_SID_READ_DTC_INFO, UDS_SID_READ_DTC_INFO_RES, handle_read_dtc_info, true },
+    { UDS_SID_CLEAR_DTC,     UDS_SID_CLEAR_DTC_RES,     handle_clear_dtc,     true },
+#endif
 #if UDS_SUPPORT_SECURITY_ACCESS
     { UDS_SID_SECURITY_ACCESS, UDS_SID_SECURITY_ACCESS_RES, handle_security_access, true },
 #endif
@@ -280,6 +342,9 @@ int doip_uds_init(const DoIP_EcuIdentity_t *identity,
     g_uds_request_cb = uds_request_cb;
     g_uds_user_ctx   = user_ctx;
     srand((unsigned)time(NULL));
+#if UDS_SUPPORT_DTC
+    memcpy(g_dtcs, g_dtc_defaults, sizeof(g_dtcs));
+#endif
     LOG_INFO(DOIP_LOG_MODULE_UDS, "UDS module initialized (per-client state)");
     return 0;
 }
