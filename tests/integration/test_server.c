@@ -705,6 +705,31 @@ void test_coalesced_frames_all_processed(void)
     close(fd);
 }
 
+/* ── Test 17: TesterPresent with suppress bit → DoIP ACK, no UDS reply ─ */
+
+void test_suppressed_response_sends_ack_only(void)
+{
+    uint8_t resp[64];
+    int fd = raw_tcp_connect();
+    TEST_ASSERT_GREATER_THAN_INT(-1, fd);
+    const uint8_t act[7] = { 0x0E, 0x00, 0x00, 0, 0, 0, 0 };
+    TEST_ASSERT_GREATER_THAN_INT(0, tcp_exchange(fd, DOIP_PT_ROUTING_ACT_REQ, act, sizeof(act),
+                                                 resp, sizeof(resp)));
+
+    const uint8_t diag[6] = { 0x0E, 0x00, DOIP_ECU_LOGICAL_ADDRESS >> 8,
+                              DOIP_ECU_LOGICAL_ADDRESS & 0xFF, 0x3E, 0x80 };
+    ssize_t n = tcp_exchange(fd, DOIP_PT_DIAGNOSTIC_MSG, diag, sizeof(diag), resp, sizeof(resp));
+    TEST_ASSERT_EQUAL_INT(DOIP_HEADER_SIZE + 5, n);
+    TEST_ASSERT_EQUAL_HEX8(0x80, resp[2]);
+    TEST_ASSERT_EQUAL_HEX8(0x02, resp[3]);            /* PT 0x8002 Diagnostic ACK */
+
+    /* Nothing else follows */
+    struct timeval tv = { .tv_sec = 0, .tv_usec = 300000 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    TEST_ASSERT_LESS_THAN_INT(1, recv(fd, resp, sizeof(resp), 0));
+    close(fd);
+}
+
 /* ── Entry point ───────────────────────────────────────────────────── */
 
 int main(void)
@@ -727,6 +752,7 @@ int main(void)
     RUN_TEST(test_routing_activation_wire_format_and_sa_range);
     RUN_TEST(test_diag_unknown_target_address_nack);
     RUN_TEST(test_coalesced_frames_all_processed);
+    RUN_TEST(test_suppressed_response_sends_ack_only);
 
     return UNITY_END();
 }

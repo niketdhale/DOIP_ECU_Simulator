@@ -331,16 +331,16 @@ next_frame:
                          "UDS response too long (%u) — dropped", uds_res_len);
                 uds_res_len = 0;
             }
-            if (uds_res_len > 0) {
-                uint8_t ack_payload[5];
-                put_be16(&ack_payload[0], DOIP_ECU_LOGICAL_ADDRESS);
-                put_be16(&ack_payload[2], tester_addr);
-                ack_payload[4] = 0x00;
-                client_send_frame(client, DOIP_PT_DIAGNOSTIC_ACK,
-                                   ack_payload, sizeof(ack_payload));
-
+            /* The DoIP ACK confirms receipt of the request and is sent even
+             * when the UDS layer suppresses its positive response. */
+            uint8_t ack_payload[5];
+            put_be16(&ack_payload[0], DOIP_ECU_LOGICAL_ADDRESS);
+            put_be16(&ack_payload[2], tester_addr);
+            ack_payload[4] = 0x00;
+            client_send_frame(client, DOIP_PT_DIAGNOSTIC_ACK,
+                               ack_payload, sizeof(ack_payload));
+            if (uds_res_len > 0)
                 client_send_diag(client, tester_addr, uds_response, uds_res_len);
-            }
             break;
         }
 

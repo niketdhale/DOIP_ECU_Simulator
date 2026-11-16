@@ -22,7 +22,7 @@ static int handle_session_control(UdsClientContext_t *ctx, const uint8_t *req, u
     if (req_len < 2) {
         res[0] = 0x7F; res[1] = UDS_SID_SESSION_CONTROL; res[2] = UDS_NRC_INCORRECT_MESSAGE_LENGTH; *res_len = 3; return -1;
     }
-    uint8_t session_type = req[1];
+    uint8_t session_type = req[1] & 0x7F;  /* bit 7 = suppressPosRspMsgIndicationBit */
     LOG_DEBUG(DOIP_LOG_MODULE_UDS, "Session Control: 0x%02X", session_type);
 
     bool valid = false;
@@ -82,6 +82,39 @@ static int handle_read_data_by_id(UdsClientContext_t *ctx, const uint8_t *req, u
     return 0;
 }
 
+/* DIDs writable through 0x2E, backed by the runtime identity.
+ * ponytail: writes update the UDS identity only — the VIN in UDP vehicle
+ * announcements keeps its init-time value; share one identity store if
+ * announcements must follow writes. */
+static int handle_write_data_by_id(UdsClientContext_t *ctx, const uint8_t *req, uint16_t req_len, uint8_t *res, uint16_t *res_len) {
+    uint8_t nrc = 0;
+    char   *dst = NULL;
+    size_t  max = 0;                       /* max data bytes; for VIN also the exact length */
+    uint16_t did = (req_len >= 3) ? (uint16_t)((req[1] << 8) | req[2]) : 0;
+    size_t   n   = (req_len >= 3) ? (size_t)(req_len - 3) : 0;
+
+    switch (did) {
+        case UDS_DID_VIN_NUMBER:        dst = g_identity.vin;           max = DOIP_VIN_LENGTH; break;
+        case UDS_DID_SYSTEM_NAME:       dst = g_identity.system_name;   max = sizeof(g_identity.system_name) - 1; break;
+        case UDS_DID_ECU_SERIAL_NUMBER: dst = g_identity.serial_number; max = sizeof(g_identity.serial_number) - 1; break;
+        default: break;
+    }
+
+    if (req_len < 4)                                            nrc = UDS_NRC_INCORRECT_MESSAGE_LENGTH;
+    else if (!dst)                                              nrc = UDS_NRC_REQUEST_OUT_OF_RANGE;
+    else if (n > max || (did == UDS_DID_VIN_NUMBER && n != max)) nrc = UDS_NRC_INCORRECT_MESSAGE_LENGTH;
+    else if (ctx->current_session == UDS_SESSION_DEFAULT_STATE) nrc = UDS_NRC_SERVICE_NOT_SUPPORTED_IN_SESSION;
+
+    if (nrc) {
+        res[0] = 0x7F; res[1] = UDS_SID_WRITE_DATA_BY_ID; res[2] = nrc; *res_len = 3; return -1;
+    }
+    memcpy(dst, &req[3], n);
+    dst[n] = '\0';
+    LOG_INFO(DOIP_LOG_MODULE_UDS, "Write DID 0x%04X (%u bytes)", did, (unsigned)n);
+    res[0] = UDS_SID_WRITE_DATA_BY_ID_RES; res[1] = req[1]; res[2] = req[2]; *res_len = 3;
+    return 0;
+}
+
 static int handle_tester_present(UdsClientContext_t *ctx, const uint8_t *req, uint16_t req_len, uint8_t *res, uint16_t *res_len) {
     if (req_len < 2) {
         res[0] = 0x7F; res[1] = UDS_SID_TESTER_PRESENT; res[2] = UDS_NRC_INCORRECT_MESSAGE_LENGTH; *res_len = 3; return -1;
@@ -122,6 +155,9 @@ static const struct { uint8_t sid; uint8_t res_id; int (*handler)(UdsClientConte
 #if UDS_SUPPORT_READ_DATA
     { UDS_SID_READ_DATA_BY_ID, UDS_SID_READ_DATA_BY_ID_RES, handle_read_data_by_id, true },
 #endif
+#if UDS_SUPPORT_WRITE_DATA
+    { UDS_SID_WRITE_DATA_BY_ID, UDS_SID_WRITE_DATA_BY_ID_RES, handle_write_data_by_id, true },
+#endif
 #if UDS_SUPPORT_TESTER_PRESENT
     { UDS_SID_TESTER_PRESENT,  UDS_SID_TESTER_PRESENT_RES,  handle_tester_present,  true },
 #endif
@@ -133,6 +169,16 @@ static const struct { uint8_t sid; uint8_t res_id; int (*handler)(UdsClientConte
 #endif
     { 0x00, 0x00, NULL, false }
 };
+
+/* Services whose second byte is a sub-function, where bit 7 is the
+ * suppressPosRspMsgIndicationBit (ISO 14229-1). */
+static bool sid_has_subfunction(uint8_t sid) {
+    switch (sid) {
+        case 0x10: case 0x11: case 0x19: case 0x27: case 0x28:
+        case 0x31: case 0x3E: case 0x85: return true;
+        default: return false;
+    }
+}
 
 int doip_uds_init(const DoIP_EcuIdentity_t *identity,
                   int (*uds_request_cb)(uint8_t, const uint8_t*, uint16_t,
@@ -180,11 +226,17 @@ int doip_uds_process_request(UdsClientContext_t *ctx, const uint8_t *req_data, u
         ctx->current_session = UDS_SESSION_DEFAULT_STATE;
     }
 
+    /* Tester asked for no positive response: the service still runs and
+     * negative responses are still sent; *res_len == 0 means "send nothing". */
+    bool suppress = sid_has_subfunction(sid) && req_len > 1 && (req_data[1] & 0x80);
+
     /* Try Custom Handler */
     for (size_t i = 0; g_uds_services[i].handler != NULL; i++) {
         if (g_uds_services[i].sid == sid && g_uds_services[i].enabled) {
             doip_uds_update_activity(ctx);
-            return g_uds_services[i].handler(ctx, req_data, req_len, res_data, res_len);
+            int rc = g_uds_services[i].handler(ctx, req_data, req_len, res_data, res_len);
+            if (rc == 0 && suppress) *res_len = 0;
+            return rc;
         }
     }
 
@@ -193,6 +245,7 @@ int doip_uds_process_request(UdsClientContext_t *ctx, const uint8_t *req_data, u
     res_data[0] = sid | 0x40;
     if (req_len > 1) { memcpy(&res_data[1], &req_data[1], req_len - 1); *res_len = req_len; }
     else { *res_len = 1; }
+    if (suppress) *res_len = 0;
     return 0;
 #else
     res_data[0] = 0x7F; res_data[1] = sid; res_data[2] = UDS_NRC_SUB_FUNCTION_NOT_SUPPORTED; *res_len = 3;

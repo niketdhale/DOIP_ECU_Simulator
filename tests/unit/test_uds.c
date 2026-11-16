@@ -239,15 +239,111 @@ void test_tester_present_valid(void)
 
 void test_tester_present_suppress_bit(void)
 {
-    /* Bit 7 set = suppress positive response — server still replies in our impl */
+    /* Bit 7 set = suppress positive response: service runs, nothing is sent */
     UdsClientContext_t ctx = make_ctx();
     uint8_t req[] = { UDS_SID_TESTER_PRESENT, 0x80 };
     int rc = process(&ctx, req, sizeof(req));
 
-    /* The handler masks req[1] & 0x7F == 0x00, so it is valid */
     TEST_ASSERT_EQUAL_INT(0, rc);
-    TEST_ASSERT_EQUAL_HEX8(UDS_SID_TESTER_PRESENT_RES, s_resp[0]);
+    TEST_ASSERT_EQUAL_UINT16(0, s_rlen);
     TEST_ASSERT_EQUAL_INT(1, g_mock_diag_activity_calls);
+}
+
+void test_suppress_bit_session_control_still_switches(void)
+{
+    UdsClientContext_t ctx = make_ctx();
+    uint8_t req[] = { UDS_SID_SESSION_CONTROL, 0x80 | UDS_SESSION_EXTENDED };
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, req, sizeof(req)));
+    TEST_ASSERT_EQUAL_UINT16(0, s_rlen);
+    TEST_ASSERT_EQUAL_INT(UDS_SESSION_EXTENDED_STATE, ctx.current_session);
+}
+
+void test_suppress_bit_does_not_hide_negative_response(void)
+{
+    UdsClientContext_t ctx = make_ctx();
+    uint8_t req[] = { UDS_SID_TESTER_PRESENT, 0x81 };  /* suppress + invalid sub-fn */
+    TEST_ASSERT_EQUAL_INT(-1, process(&ctx, req, sizeof(req)));
+    TEST_ASSERT_EQUAL_UINT16(3, s_rlen);
+    TEST_ASSERT_EQUAL_HEX8(0x7F, s_resp[0]);
+}
+
+void test_suppress_bit_ignored_for_services_without_subfunction(void)
+{
+    /* 0x22 has no sub-function: a DID starting with a high bit is not a suppress request */
+    UdsClientContext_t ctx = make_ctx();
+    uint8_t req[] = { UDS_SID_READ_DATA_BY_ID, 0xF1, 0x90 };
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, req, sizeof(req)));
+    TEST_ASSERT_EQUAL_UINT16(3 + DOIP_VIN_LENGTH, s_rlen);
+}
+
+/* ── Write Data By Identifier (0x2E) ───────────────────────────────── */
+
+static UdsClientContext_t make_extended_ctx(void)
+{
+    UdsClientContext_t ctx = make_ctx();
+    ctx.current_session = UDS_SESSION_EXTENDED_STATE;
+    return ctx;
+}
+
+void test_write_did_vin_roundtrip(void)
+{
+    UdsClientContext_t ctx = make_extended_ctx();
+    uint8_t wr[3 + DOIP_VIN_LENGTH] = { UDS_SID_WRITE_DATA_BY_ID, 0xF1, 0x90 };
+    memcpy(&wr[3], "NEWVIN00000000001", DOIP_VIN_LENGTH);
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, wr, sizeof(wr)));
+    TEST_ASSERT_EQUAL_UINT16(3, s_rlen);
+    TEST_ASSERT_EQUAL_HEX8(UDS_SID_WRITE_DATA_BY_ID_RES, s_resp[0]);
+    TEST_ASSERT_EQUAL_HEX8(0xF1, s_resp[1]);
+    TEST_ASSERT_EQUAL_HEX8(0x90, s_resp[2]);
+
+    uint8_t rd[] = { UDS_SID_READ_DATA_BY_ID, 0xF1, 0x90 };
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, rd, sizeof(rd)));
+    TEST_ASSERT_EQUAL_MEMORY("NEWVIN00000000001", &s_resp[3], DOIP_VIN_LENGTH);
+}
+
+void test_write_did_string_shorter_than_old_value(void)
+{
+    UdsClientContext_t ctx = make_extended_ctx();
+    uint8_t wr[] = { UDS_SID_WRITE_DATA_BY_ID, 0xF1, 0x8C, 'A', 'B' };
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, wr, sizeof(wr)));
+
+    uint8_t rd[] = { UDS_SID_READ_DATA_BY_ID, 0xF1, 0x8C };
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, rd, sizeof(rd)));
+    TEST_ASSERT_EQUAL_UINT16(3 + 2, s_rlen);
+    TEST_ASSERT_EQUAL_MEMORY("AB", &s_resp[3], 2);
+}
+
+static void expect_write_nrc(UdsClientContext_t *ctx, const uint8_t *req, uint16_t len, uint8_t nrc)
+{
+    TEST_ASSERT_EQUAL_INT(-1, process(ctx, req, len));
+    TEST_ASSERT_EQUAL_UINT16(3, s_rlen);
+    TEST_ASSERT_EQUAL_HEX8(0x7F, s_resp[0]);
+    TEST_ASSERT_EQUAL_HEX8(UDS_SID_WRITE_DATA_BY_ID, s_resp[1]);
+    TEST_ASSERT_EQUAL_HEX8(nrc, s_resp[2]);
+}
+
+void test_write_did_negative_responses(void)
+{
+    UdsClientContext_t ext = make_extended_ctx();
+    UdsClientContext_t def = make_ctx();
+
+    uint8_t no_data[]   = { UDS_SID_WRITE_DATA_BY_ID, 0xF1, 0x90 };
+    uint8_t short_vin[] = { UDS_SID_WRITE_DATA_BY_ID, 0xF1, 0x90, 'X' };
+    uint8_t read_only[] = { UDS_SID_WRITE_DATA_BY_ID, 0xF1, 0x82, 'X' };  /* SW version */
+    uint8_t ok_serial[] = { UDS_SID_WRITE_DATA_BY_ID, 0xF1, 0x8C, 'X' };
+    uint8_t too_long[3 + sizeof(((DoIP_EcuIdentity_t*)0)->serial_number)] =
+                          { UDS_SID_WRITE_DATA_BY_ID, 0xF1, 0x8C };
+
+    expect_write_nrc(&ext, no_data,   sizeof(no_data),   UDS_NRC_INCORRECT_MESSAGE_LENGTH);
+    expect_write_nrc(&ext, short_vin, sizeof(short_vin), UDS_NRC_INCORRECT_MESSAGE_LENGTH);
+    expect_write_nrc(&ext, too_long,  sizeof(too_long),  UDS_NRC_INCORRECT_MESSAGE_LENGTH);
+    expect_write_nrc(&ext, read_only, sizeof(read_only), UDS_NRC_REQUEST_OUT_OF_RANGE);
+    expect_write_nrc(&def, ok_serial, sizeof(ok_serial), UDS_NRC_SERVICE_NOT_SUPPORTED_IN_SESSION);
+
+    /* None of the rejected writes changed the serial number */
+    uint8_t rd[] = { UDS_SID_READ_DATA_BY_ID, 0xF1, 0x8C };
+    TEST_ASSERT_EQUAL_INT(0, process(&ext, rd, sizeof(rd)));
+    TEST_ASSERT_EQUAL_MEMORY(TEST_SERIAL, &s_resp[3], strlen(TEST_SERIAL));
 }
 
 void test_tester_present_invalid_subfunc(void)
@@ -386,6 +482,16 @@ int main(void)
     RUN_TEST(test_tester_present_valid);
     RUN_TEST(test_tester_present_suppress_bit);
     RUN_TEST(test_tester_present_invalid_subfunc);
+
+    /* Suppress positive response bit */
+    RUN_TEST(test_suppress_bit_session_control_still_switches);
+    RUN_TEST(test_suppress_bit_does_not_hide_negative_response);
+    RUN_TEST(test_suppress_bit_ignored_for_services_without_subfunction);
+
+    /* Write DID */
+    RUN_TEST(test_write_did_vin_roundtrip);
+    RUN_TEST(test_write_did_string_shorter_than_old_value);
+    RUN_TEST(test_write_did_negative_responses);
 
     /* ECU Reset */
     RUN_TEST(test_ecu_reset_valid);

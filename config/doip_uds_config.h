@@ -67,6 +67,7 @@
 #define UDS_NRC_REQUEST_OUT_OF_RANGE    0x31
 #define UDS_NRC_SECURITY_ACCESS_DENIED  0x33
 #define UDS_NRC_INVALID_KEY             0x35
+#define UDS_NRC_SERVICE_NOT_SUPPORTED_IN_SESSION 0x7F
 
 /* ===== Data Identifiers (DIDs) ===== */
 #define UDS_DID_VIN_NUMBER              0xF190
@@ -79,7 +80,7 @@
 #define UDS_SUPPORT_SESSION_CONTROL     true
 #define UDS_SUPPORT_ECU_RESET           true
 #define UDS_SUPPORT_READ_DATA           true
-#define UDS_SUPPORT_WRITE_DATA          false
+#define UDS_SUPPORT_WRITE_DATA          true   /* 0x2E: VIN, system name, serial number; needs a non-default session */
 #define UDS_SUPPORT_ROUTINE_CONTROL     true
 #define UDS_SUPPORT_TESTER_PRESENT      true
 #define UDS_SUPPORT_SECURITY_ACCESS     false
