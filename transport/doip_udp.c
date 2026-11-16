@@ -10,6 +10,7 @@
 
 #include "transport/doip_udp.h"
 #include "transport/doip_tcp.h"
+#include "transport/doip_uds.h"
 #include "core/doip_frame.h"
 #include "core/doip_log.h"
 #include <sys/socket.h>
@@ -31,8 +32,9 @@ static uint32_t g_announcement_count = 0;
 static struct sockaddr_storage g_mcast_addr;
 static socklen_t               g_mcast_addr_len = 0;
 
-/* Runtime ECU identity — set once at doip_udp_init() */
-static DoIP_EcuIdentity_t g_identity;
+/* Runtime ECU identity is owned by the UDS module so that DIDs written
+ * over UDS (e.g. the VIN) show up in announcements. */
+#define g_identity (*doip_uds_identity())
 
 /* ---------------------------------------------------------------------------
  * Internal helpers
@@ -84,8 +86,7 @@ static int udp_send_payload(uint16_t ptype, const void *payload, uint32_t plen) 
  * Public API
  * -------------------------------------------------------------------------*/
 
-int doip_udp_init(const DoIP_EcuIdentity_t *identity) {
-    if (identity) g_identity = *identity;
+int doip_udp_init(void) {
 
 #if DOIP_ENABLE_IPV6
     g_udp_sock = socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);

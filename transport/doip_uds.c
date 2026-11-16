@@ -82,10 +82,8 @@ static int handle_read_data_by_id(UdsClientContext_t *ctx, const uint8_t *req, u
     return 0;
 }
 
-/* DIDs writable through 0x2E, backed by the runtime identity.
- * ponytail: writes update the UDS identity only — the VIN in UDP vehicle
- * announcements keeps its init-time value; share one identity store if
- * announcements must follow writes. */
+/* DIDs writable through 0x2E, backed by the runtime identity (which UDP
+ * vehicle announcements also read, so a written VIN is announced too). */
 static int handle_write_data_by_id(UdsClientContext_t *ctx, const uint8_t *req, uint16_t req_len, uint8_t *res, uint16_t *res_len) {
     uint8_t nrc = 0;
     char   *dst = NULL;
@@ -261,5 +259,7 @@ bool doip_uds_is_session_active(const UdsClientContext_t *ctx, uint32_t timeout_
     if (!ctx) return false;
     return (get_time_ms() - ctx->last_activity_ms) < timeout_ms;
 }
+
+const DoIP_EcuIdentity_t *doip_uds_identity(void) { return &g_identity; }
 
 void doip_uds_deinit(void) { LOG_INFO(DOIP_LOG_MODULE_UDS, "UDS module deinitialized"); }

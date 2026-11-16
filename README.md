@@ -53,7 +53,7 @@ All four transport extensions are **disabled by default** and have zero impact o
 - `0x10` Session Control
 - `0x11` ECU Reset
 - `0x22` Read Data By Identifier (VIN, SW Version, Serial Number…)
-- `0x2E` Write Data By Identifier — VIN (`0xF190`, exactly 17 bytes), system name (`0xF186`), serial number (`0xF18C`); requires a non-default session (NRC `0x7F` otherwise)
+- `0x2E` Write Data By Identifier — VIN (`0xF190`, exactly 17 bytes), system name (`0xF186`), serial number (`0xF18C`); requires a non-default session (NRC `0x7F` otherwise). A written VIN is also used in UDP vehicle announcements and ID responses
 - `0x31` Routine Control
 - `0x3E` Tester Present
 - Suppress-positive-response bit (`0x80` in the sub-function byte) honoured for sub-function services: the service runs, the DoIP ACK is sent, and no positive UDS response follows (e.g. `3E 80`); negative responses are still sent

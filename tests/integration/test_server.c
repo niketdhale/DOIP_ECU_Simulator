@@ -730,6 +730,37 @@ void test_suppressed_response_sends_ack_only(void)
     close(fd);
 }
 
+/* ── Test 18: VIN written over UDS is used by UDP vehicle ID responses ─ */
+
+void test_written_vin_appears_in_udp_response(void)
+{
+    DoIP_Client_t *c = client_connect_and_activate();
+    TEST_ASSERT_NOT_NULL(c);
+    uint8_t resp[DOIP_HEADER_SIZE + 64];
+    uint16_t rlen = 0;
+
+    uint8_t session[] = { UDS_SID_SESSION_CONTROL, UDS_SESSION_EXTENDED };
+    TEST_ASSERT_EQUAL_INT(DOIP_CLIENT_OK, DoIP_Client_Transact(
+        c, DOIP_ECU_LOGICAL_ADDRESS, session, sizeof(session), resp, sizeof(resp), &rlen));
+
+    uint8_t wr[3 + DOIP_VIN_LENGTH] = { UDS_SID_WRITE_DATA_BY_ID, 0xF1, 0x90 };
+    memcpy(&wr[3], "WRITTENVIN0000001", DOIP_VIN_LENGTH);
+    TEST_ASSERT_EQUAL_INT(DOIP_CLIENT_OK, DoIP_Client_Transact(
+        c, DOIP_ECU_LOGICAL_ADDRESS, wr, sizeof(wr), resp, sizeof(resp), &rlen));
+    TEST_ASSERT_EQUAL_HEX8(UDS_SID_WRITE_DATA_BY_ID_RES, resp[0]);
+    client_destroy(c);
+
+    ssize_t n = udp_exchange(DOIP_PROTOCOL_VERSION, 0x0001, NULL, 0, resp, sizeof(resp));
+    TEST_ASSERT_EQUAL_INT(DOIP_HEADER_SIZE + 33, n);
+    TEST_ASSERT_EQUAL_MEMORY("WRITTENVIN0000001", resp + DOIP_HEADER_SIZE, DOIP_VIN_LENGTH);
+
+    /* VIN-filtered requests follow the new VIN, not the old one */
+    TEST_ASSERT_GREATER_THAN_INT(0, udp_exchange(DOIP_PROTOCOL_VERSION, 0x0003,
+                                 (const uint8_t*)"WRITTENVIN0000001", 17, resp, sizeof(resp)));
+    TEST_ASSERT_LESS_THAN_INT(1, udp_exchange(DOIP_PROTOCOL_VERSION, 0x0003,
+                              (const uint8_t*)g_test_identity.vin, 17, resp, sizeof(resp)));
+}
+
 /* ── Entry point ───────────────────────────────────────────────────── */
 
 int main(void)
@@ -753,6 +784,7 @@ int main(void)
     RUN_TEST(test_diag_unknown_target_address_nack);
     RUN_TEST(test_coalesced_frames_all_processed);
     RUN_TEST(test_suppressed_response_sends_ack_only);
+    RUN_TEST(test_written_vin_appears_in_udp_response);
 
     return UNITY_END();
 }

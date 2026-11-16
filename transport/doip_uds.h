@@ -31,4 +31,8 @@ void doip_uds_update_activity(UdsClientContext_t *ctx);
 bool doip_uds_is_session_active(const UdsClientContext_t *ctx, uint32_t timeout_ms);
 void doip_uds_deinit(void);
 
+/** The single runtime ECU identity (also used for UDP announcements);
+ *  reflects DIDs written through WriteDataByIdentifier. */
+const DoIP_EcuIdentity_t *doip_uds_identity(void);
+
 #endif /* DOIP_UDS_H */
