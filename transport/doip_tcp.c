@@ -197,6 +197,7 @@ static int process_client_frame(doip_client_t *client)
     client->rx_bytes += (size_t)n;
 
     /* --- Step 2: Wait until we have at least a complete header --- */
+next_frame:
     if (client->rx_bytes < DOIP_HEADER_SIZE) return 0;
 
     /* --- Step 3: Parse header and wait for full payload --- */
@@ -228,11 +229,7 @@ static int process_client_frame(doip_client_t *client)
         int rc = g_doip_frame_received_cb(client->fd, hdr.payload_type,
                                            pl, hdr.payload_length,
                                            g_doip_async_user_ctx);
-        if (rc == 0) {
-            /* Application handled it — consume bytes and return */
-            client->rx_bytes = 0;
-            return 0;
-        }
+        if (rc == 0) goto frame_done; /* Application handled it — consume the frame */
     }
 
     /* --- Step 6: Built-in dispatch --- */
@@ -375,9 +372,11 @@ frame_done:
         memmove(client->rx_buf, client->rx_buf + frame_total,
                 client->rx_bytes - frame_total);
         client->rx_bytes -= frame_total;
-    } else {
-        client->rx_bytes = 0;
+        /* One read can deliver several frames (TCP coalescing) — process
+         * the rest now; no further readable event will announce them. */
+        goto next_frame;
     }
+    client->rx_bytes = 0;
     return 0;
 }
 

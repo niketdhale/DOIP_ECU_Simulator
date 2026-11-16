@@ -23,3 +23,6 @@ jobs:
         run: make -j"$(nproc)" all lib ${{ matrix.flags }} CC="gcc -Werror"
       - name: Unit + integration tests under ASan/UBSan
         run: make test ${{ matrix.flags }} SANITIZE="-fsanitize=address,undefined -fno-sanitize-recover=undefined"
+      - name: Alive-check timing tests (~22 s)
+        if: matrix.flags == ''
+        run: make test-alive SANITIZE="-fsanitize=address,undefined -fno-sanitize-recover=undefined"

@@ -523,7 +523,6 @@ void test_multiple_clients_independent_sessions(void)
     client_destroy(c2);
 }
 
-/* ── Entry point ───────────────────────────────────────────────────── */
 
 
 /* ── Raw-frame helpers for protocol conformance tests ──────────────── */
@@ -674,6 +673,39 @@ void test_diag_unknown_target_address_nack(void)
     close(fd);
 }
 
+/* ── Test 16: Two frames in one TCP segment are both processed ──────── */
+
+void test_coalesced_frames_all_processed(void)
+{
+    int fd = raw_tcp_connect();
+    TEST_ASSERT_GREATER_THAN_INT(-1, fd);
+    struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    /* Routing activation + TesterPresent sent with a single send() */
+    const uint8_t act[7]  = { 0x0E, 0x00, 0x00, 0, 0, 0, 0 };
+    const uint8_t diag[6] = { 0x0E, 0x00, DOIP_ECU_LOGICAL_ADDRESS >> 8,
+                              DOIP_ECU_LOGICAL_ADDRESS & 0xFF, 0x3E, 0x00 };
+    uint8_t buf[64];
+    size_t len = raw_frame(buf, DOIP_PROTOCOL_VERSION, DOIP_PT_ROUTING_ACT_REQ, act, sizeof(act));
+    len += raw_frame(buf + len, DOIP_PROTOCOL_VERSION, DOIP_PT_DIAGNOSTIC_MSG, diag, sizeof(diag));
+    send(fd, buf, len, 0);
+
+    /* Expect: activation response (8+9) + DiagACK (8+5) + TesterPresent response (8+4+2) */
+    const size_t expected = 17 + 13 + 14;
+    uint8_t resp[128];
+    size_t got = 0;
+    while (got < expected) {
+        ssize_t n = recv(fd, resp + got, sizeof(resp) - got, 0);
+        if (n <= 0) break;
+        got += (size_t)n;
+    }
+    TEST_ASSERT_EQUAL_UINT(expected, got);
+    TEST_ASSERT_EQUAL_HEX8(0x7E, resp[expected - 2]);   /* TesterPresent positive response */
+    close(fd);
+}
+
+/* ── Entry point ───────────────────────────────────────────────────── */
 
 int main(void)
 {
@@ -694,6 +726,7 @@ int main(void)
     RUN_TEST(test_udp_vehicle_id_filtered_requests);
     RUN_TEST(test_routing_activation_wire_format_and_sa_range);
     RUN_TEST(test_diag_unknown_target_address_nack);
+    RUN_TEST(test_coalesced_frames_all_processed);
 
     return UNITY_END();
 }
