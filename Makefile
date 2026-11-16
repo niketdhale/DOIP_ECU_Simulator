@@ -240,6 +240,18 @@ test-alive-bin: $(UNITY_SRC) tests/integration/test_alive_check.c $(PROD_SRCS)
 test-isotp-server: $(UNITY_SRC) tests/integration/test_isotp_server.c $(PROD_SRCS)
 	$(CC) $(INT_CFLAGS) -DDOIP_ENABLE_ISO_TP=true -o $@ $^ $(TEST_LDFLAGS)
 
+# Throwaway self-signed certificates for the TLS tests (needs the openssl tool)
+CERT_DIR = tests/certs
+$(CERT_DIR)/server.crt:
+	mkdir -p $(CERT_DIR)
+	openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -subj "/CN=doip-test-server" \
+	    -keyout $(CERT_DIR)/server.key -out $@ 2>/dev/null
+	openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -subj "/CN=doip-test-client" \
+	    -keyout $(CERT_DIR)/client.key -out $(CERT_DIR)/client.crt 2>/dev/null
+
+test-tls: $(UNITY_SRC) tests/integration/test_tls.c $(PROD_SRCS) | $(CERT_DIR)/server.crt
+	$(CC) $(INT_CFLAGS) -DDOIP_ENABLE_TLS=true -o $@ $^ $(TEST_LDFLAGS) -lssl -lcrypto
+
 # ----- End-to-end: the real simulator (main.c) driven over sockets ----
 # Built straight from sources with the test flags, so sanitizers apply.
 test-sim: main.c $(PROD_SRCS)
@@ -278,10 +290,11 @@ else
 endif
 	@echo "=== End-to-End Tests Complete ==="
 
-test-features: test-isotp-server
+test-features: test-isotp-server test-tls
 	@echo ""
 	@echo "=== Feature Tests (port 23400) ==="
 	./test-isotp-server
+	./test-tls
 	@echo "=== Feature Tests Complete ==="
 
 # Fast CI target: unit + integration + end-to-end (< 30 s)
@@ -304,7 +317,8 @@ clean:
 	rm -f $(LIB_OBJS) $(SHARED_LIB) $(STATIC_LIB) $(SONAME) libdoip.so
 	rm -f $(LIB_TEST_SERVER) $(LIB_TEST_CLIENT) $(LIB_TEST_EXAMPLE)
 	rm -f test-frame test-uds test-isotp test-server test-alive-bin test-sim
-	rm -f test-isotp-server
+	rm -f test-isotp-server test-tls
+	rm -rf $(CERT_DIR)
 	rm -f transport/doip_io.o transport/doip_tls.o transport/doip_isotp.o
 	rm -f transport/doip_io.lo transport/doip_tls.lo transport/doip_isotp.lo
 

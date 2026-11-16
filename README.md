@@ -41,7 +41,7 @@ All four transport extensions are **disabled by default** and have zero impact o
 
 | Feature | Flag | Description |
 |---------|------|-------------|
-| **TLS/DTLS** | `DOIP_TLS=1` | OpenSSL TLS 1.2+ on TCP; DTLS 1.2 on UDP |
+| **TLS** | `DOIP_TLS=1` | OpenSSL TLS 1.2+ on TCP (UDP discovery stays unencrypted) |
 | **IPv6** | `DOIP_IPV6=1` | Dual-stack `AF_INET6` sockets, `ff02::1` multicast |
 | **ISO-TP** | `DOIP_ISOTP=1` | ISO 15765-2 segmentation/reassembly of UDS payloads |
 | **Async API** | (always on) | `on_client_connect/disconnect/frame_received` callbacks in `DoIP_Config_t` |
@@ -232,7 +232,7 @@ Each feature is activated by a Makefile variable. They can be combined freely.
 # IPv6 dual-stack sockets (TCP + UDP)
 make DOIP_IPV6=1
 
-# TLS 1.2+ on TCP / DTLS 1.2 on UDP (requires OpenSSL)
+# TLS 1.2+ on TCP (requires OpenSSL)
 make DOIP_TLS=1
 
 # ISO-TP segmentation / reassembly (ISO 15765-2)
@@ -260,6 +260,10 @@ make test SANITIZE="-fsanitize=address,undefined"
 
 # End-to-end: launches the real simulator binary and talks DoIP to it (needs python3)
 make test-e2e
+
+# Feature paths: ISO-TP and TLS servers, each built with its own define
+# (needs OpenSSL headers and the openssl tool; generates tests/certs/)
+make test-features
 
 # ISO-TP unit tests only (no sockets, instant)
 make test-isotp
@@ -296,7 +300,7 @@ make test-alive && ./test-alive-bin
 
 # With TLS:
 make clean && make DOIP_TLS=1
-./doip_ecu_sim   # configure cert/key via DoIP_Config_t::tls in main.c
+./doip_ecu_sim --tls-cert server.crt --tls-key server.key   # both are required in a TLS build
 
 # With IPv6:
 make clean && make DOIP_IPV6=1
@@ -517,7 +521,7 @@ config.on_frame_received    = my_frame_cb;
 
 ---
 
-### TLS / DTLS (`make DOIP_TLS=1`)
+### TLS (`make DOIP_TLS=1`)
 
 Requires OpenSSL ≥ 1.1.1 (`sudo apt install libssl-dev`).
 
@@ -529,9 +533,13 @@ openssl req -x509 -newkey rsa:2048 -nodes \
     -subj "/CN=doip-test" -days 365
 
 make clean && make DOIP_TLS=1
+
+./doip_ecu_sim --tls-cert tests/certs/server.crt --tls-key tests/certs/server.key
+# mutual TLS: also require a client certificate signed by this CA
+./doip_ecu_sim --tls-cert server.crt --tls-key server.key --tls-ca ca.crt --tls-verify-peer
 ```
 
-Configure in `main.c` before calling `DoIP_Init()`:
+Through the API, set the same values before calling `DoIP_Init()`:
 
 ```c
 DoIP_Config_t config = {0};
@@ -543,6 +551,14 @@ DoIP_Init(handle, &config);
 ```
 
 Internals: `doip_tcp_tls_config()` is called by `DoIP_Init()` before the FSM opens sockets. At accept time, `doip_tls_accept()` performs the TLS handshake and returns a `doip_io_t` whose vtable calls `SSL_read`/`SSL_write` — the rest of the stack sees no difference.
+
+Limits to know about:
+
+- In a TLS build every TCP client must use TLS on the same port; cleartext clients are dropped.
+- UDP (vehicle announcement / identification) is not encrypted. `doip_dtls_wrap()` exists in `doip_tls.c` but is not wired into the UDP path.
+- The handshake is done synchronously at accept time (bounded by `DOIP_TLS_HANDSHAKE_TIMEOUT_S`, 2 s), so a client that connects and stays silent pauses the server for that long.
+- The bundled client library and `doip_client_demo` do not speak TLS.
+- `doip_tls_init()` sets `SIGPIPE` to ignored for the process, because OpenSSL writes with plain `write()`.
 
 ---
 
@@ -806,7 +822,7 @@ SONAME versioning: `libdoip.so.1.0.0` → `libdoip.so.1` → `libdoip.so`
 | Client gets `ERR_TIMEOUT (-3)` | Server not running or wrong IP | Start simulator first; check port 13400 firewall |
 | Client gets `ERR_REJECTED (-5)` | Routing activation rejected | Check `DOIP_TESTER_LOGICAL_ADDRESS` matches server |
 | UDP discovery returns no result | Broadcast blocked | Pass IP directly: `./doip_client_demo 127.0.0.1` |
-| TLS handshake fails | cert/key not configured | Call `doip_tcp_tls_config()` before `DoIP_Init()` |
+| TLS build exits at start-up | cert/key not configured | Pass `--tls-cert` / `--tls-key`, or set `DoIP_Config_t::tls` before `DoIP_Init()` |
 | TLS link fails: `-lssl not found` | OpenSSL missing | `sudo apt install libssl-dev` |
 | IPv6 bind fails | Kernel IPv6 module not loaded | `sudo modprobe ipv6` or build without `DOIP_IPV6=1` |
 | `make docs` fails: `doxygen: No such file` | Doxygen not installed | `sudo apt install doxygen` |

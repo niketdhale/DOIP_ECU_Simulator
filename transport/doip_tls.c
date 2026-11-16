@@ -16,33 +16,43 @@
 #include <errno.h>
 #include <unistd.h>
 #include <stdint.h>   /* intptr_t */
+#include <signal.h>
 
 /* ---------------------------------------------------------------------------
  * TLS vtable functions — ctx holds a malloc'd SSL* pointer
  * -------------------------------------------------------------------------*/
 
+/* Map an SSL_read/SSL_write result <= 0 onto the recv()/send() contract the
+ * transport expects: 0 = orderly close, -1 with errno EAGAIN = try again,
+ * -1 with any other errno = dead connection.  errno is always set, so a stale
+ * EAGAIN from an unrelated call can never make a broken session look idle. */
+static ssize_t tls_result(SSL *ssl, int n)
+{
+    switch (SSL_get_error(ssl, n)) {
+        case SSL_ERROR_WANT_READ:
+        case SSL_ERROR_WANT_WRITE:  errno = EAGAIN;     return -1;
+        case SSL_ERROR_ZERO_RETURN:                     return 0;   /* close_notify */
+        default:                    errno = ECONNRESET; return -1;
+    }
+}
+
 static ssize_t tls_read(void *ctx, void *buf, size_t len)
 {
     SSL *ssl = (SSL *)ctx;
+    ERR_clear_error();   /* SSL_get_error() needs an empty error queue */
     int n = SSL_read(ssl, buf, (int)len);
-    if (n > 0) return (ssize_t)n;
-    int err = SSL_get_error(ssl, n);
-    if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
-        errno = EAGAIN;
-    }
-    return -1;
+    return (n > 0) ? (ssize_t)n : tls_result(ssl, n);
 }
 
 static ssize_t tls_write(void *ctx, const void *buf, size_t len)
 {
     SSL *ssl = (SSL *)ctx;
+    ERR_clear_error();
     int n = SSL_write(ssl, buf, (int)len);
     if (n > 0) return (ssize_t)n;
-    int err = SSL_get_error(ssl, n);
-    if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
-        errno = EAGAIN;
-    }
-    return -1;
+    ssize_t rc = tls_result(ssl, n);
+    if (rc == 0) { errno = ECONNRESET; rc = -1; }   /* peer already closed: not a successful write */
+    return rc;
 }
 
 static int tls_getfd(void *ctx)
@@ -81,6 +91,10 @@ int doip_tls_init(doip_tls_server_t *s,
                    const char *ca_file,   bool verify_peer)
 {
     if (!s || !cert_file || !key_file) return -1;
+
+    /* OpenSSL writes with plain write(): without this, a tester that
+     * disconnects while a response is being sent kills the process. */
+    signal(SIGPIPE, SIG_IGN);
 
     /* One-time OpenSSL initialisation (idempotent in OpenSSL 1.1+) */
     SSL_library_init();

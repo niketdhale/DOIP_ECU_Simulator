@@ -189,34 +189,11 @@ static void close_client(doip_client_t *client) {
  * -------------------------------------------------------------------------*/
 
 /**
- * Accumulate available bytes into client->rx_buf, then attempt to process
- * a complete frame.  Returns 0 when waiting for more data, -1 on error or
- * when the caller should close the client.
+ * Process every complete frame currently in client->rx_buf.  Returns 0 when
+ * waiting for more data, -1 on error or when the caller should close the client.
  */
-static int process_client_frame(doip_client_t *client)
+static int process_buffered_frames(doip_client_t *client)
 {
-    /* --- Step 1: Read whatever is available into the tail of rx_buf --- */
-    size_t space = sizeof(client->rx_buf) - client->rx_bytes;
-    if (space == 0) {
-        /* Buffer full with no complete frame → protocol error */
-        LOG_WARN(DOIP_LOG_MODULE_TCP, "Rx buffer overflow for fd=%d", client->fd);
-        return -1;
-    }
-
-    ssize_t n = client->io.read(client->io.ctx,
-                                 client->rx_buf + client->rx_bytes, space);
-    if (n == 0) {
-        /* Graceful peer close */
-        LOG_INFO(DOIP_LOG_MODULE_TCP, "Peer closed connection (fd=%d)", client->fd);
-        return -1;
-    }
-    if (n < 0) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK) return 0; /* No data yet */
-        LOG_WARN(DOIP_LOG_MODULE_TCP, "recv error fd=%d: %s", client->fd, strerror(errno));
-        return -1;
-    }
-    client->rx_bytes += (size_t)n;
-
     /* --- Step 2: Wait until we have at least a complete header --- */
 next_frame:
     if (client->rx_bytes < DOIP_HEADER_SIZE) return 0;
@@ -434,6 +411,44 @@ frame_done:
     }
     client->rx_bytes = 0;
     return 0;
+}
+
+/**
+ * Accumulate available bytes into client->rx_buf, then process the complete
+ * frames.  Returns 0 when waiting for more data, -1 on error or when the
+ * caller should close the client.
+ */
+static int process_client_frame(doip_client_t *client)
+{
+    for (;;) {
+        /* --- Step 1: Read whatever is available into the tail of rx_buf --- */
+        size_t space = sizeof(client->rx_buf) - client->rx_bytes;
+        if (space == 0) {
+            /* Buffer full with no complete frame → protocol error */
+            LOG_WARN(DOIP_LOG_MODULE_TCP, "Rx buffer overflow for fd=%d", client->fd);
+            return -1;
+        }
+
+        ssize_t n = client->io.read(client->io.ctx,
+                                     client->rx_buf + client->rx_bytes, space);
+        if (n == 0) {
+            /* Graceful peer close */
+            LOG_INFO(DOIP_LOG_MODULE_TCP, "Peer closed connection (fd=%d)", client->fd);
+            return -1;
+        }
+        if (n < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) return 0; /* No data yet */
+            LOG_WARN(DOIP_LOG_MODULE_TCP, "recv error fd=%d: %s", client->fd, strerror(errno));
+            return -1;
+        }
+        client->rx_bytes += (size_t)n;
+
+        int rc = process_buffered_frames(client);
+        /* A read that filled all the free space may have left more behind in
+         * the I/O layer (the rest of a TLS record, which select() cannot see),
+         * so read again instead of waiting for the next readable event. */
+        if (rc != 0 || (size_t)n < space) return rc;
+    }
 }
 
 /* ---------------------------------------------------------------------------

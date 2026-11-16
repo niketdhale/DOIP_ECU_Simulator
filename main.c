@@ -55,6 +55,13 @@ static void usage(const char *prog) {
            "  --drop-ack            Never send the DoIP diagnostic ACK\n"
            "  --drop-response       Never send UDS responses\n"
            "  --force-nack <code>   Reject every diagnostic message with this NACK code\n"
+#if DOIP_ENABLE_TLS
+           "TLS (required in this build):\n"
+           "  --tls-cert <pem>      Server certificate\n"
+           "  --tls-key <pem>       Server private key\n"
+           "  --tls-ca <pem>        CA bundle used to verify client certificates\n"
+           "  --tls-verify-peer     Require a valid client certificate\n"
+#endif
            "  --help                Show this help\n",
            prog, (unsigned)DOIP_FUNCTIONAL_LOGICAL_ADDRESS, (unsigned)DOIP_TCP_PORT);
 }
@@ -73,6 +80,7 @@ static unsigned long parse_num(const char *opt, const char *s, unsigned long max
 int main(int argc, char *argv[]) {
     signal(SIGINT, sigint_handler);
     signal(SIGTERM, sigint_handler);
+    signal(SIGPIPE, SIG_IGN);   /* a tester disconnecting mid-response must not kill us */
 
     /* 1. Create Instance */
     DoIP_Handle_t *handle = DoIP_Create();
@@ -115,6 +123,12 @@ int main(int argc, char *argv[]) {
         { "drop-ack",       no_argument,       NULL, 'A' },
         { "drop-response",  no_argument,       NULL, 'R' },
         { "force-nack",     required_argument, NULL, 'n' },
+#if DOIP_ENABLE_TLS
+        { "tls-cert",        required_argument, NULL, 'c' },
+        { "tls-key",         required_argument, NULL, 'k' },
+        { "tls-ca",          required_argument, NULL, 'C' },
+        { "tls-verify-peer", no_argument,       NULL, 'V' },
+#endif
         { "help",      no_argument,       NULL, 'h' },
         { 0 }
     };
@@ -139,10 +153,24 @@ int main(int argc, char *argv[]) {
             case 'A': config.faults.drop_diag_ack     = true; break;
             case 'R': config.faults.drop_response     = true; break;
             case 'n': config.faults.force_diag_nack   = (uint8_t)parse_num("force-nack", optarg, 0xFF); break;
+#if DOIP_ENABLE_TLS
+            case 'c': config.tls.cert_file   = optarg; break;
+            case 'k': config.tls.key_file    = optarg; break;
+            case 'C': config.tls.ca_file     = optarg; break;
+            case 'V': config.tls.verify_peer = true;   break;
+#endif
             case 'h': usage(argv[0]); DoIP_Destroy(handle); return EXIT_SUCCESS;
             default:  usage(argv[0]); DoIP_Destroy(handle); return EXIT_FAILURE;
         }
     }
+
+#if DOIP_ENABLE_TLS
+    if (!config.tls.cert_file || !config.tls.key_file) {
+        fprintf(stderr, "This build has TLS enabled: --tls-cert and --tls-key are required\n");
+        DoIP_Destroy(handle);
+        return EXIT_FAILURE;
+    }
+#endif
 
     /* 4. Initialize */
     if (DoIP_Init(handle, &config) != 0) {
