@@ -234,6 +234,11 @@ test-server: $(UNITY_SRC) tests/integration/test_server.c $(PROD_SRCS)
 test-alive-bin: $(UNITY_SRC) tests/integration/test_alive_check.c $(PROD_SRCS)
 	$(CC) $(INT_CFLAGS) -o $@ $^ $(TEST_LDFLAGS)
 
+# ----- End-to-end: the real simulator (main.c) driven over sockets ----
+# Built straight from sources with the test flags, so sanitizers apply.
+test-sim: main.c $(PROD_SRCS)
+	$(CC) $(TEST_CFLAGS) -o $@ $^ $(TEST_LDFLAGS)
+
 # ----- Runners -------------------------------------------------------
 test-unit: test-frame test-uds test-isotp
 	@echo ""
@@ -255,10 +260,22 @@ test-alive: test-alive-bin
 	./test-alive-bin
 	@echo "=== Alive Check Tests Complete ==="
 
-# Fast CI target: unit + integration (< 15 s)
-test: test-unit test-integration
+# Speaks the plain default wire format, so it is skipped for TLS / ISO-TP builds.
+test-e2e: test-sim
+	@echo ""
+	@echo "=== End-to-End Tests (port 24400) ==="
+ifneq ($(filter 1,$(DOIP_TLS) $(DOIP_ISOTP)),)
+	@echo "skipped: TLS / ISO-TP build"
+else
+	@command -v python3 >/dev/null 2>&1 || { echo "skipped: python3 not found"; exit 0; }; \
+	 DOIP_SIM=./test-sim python3 tests/e2e/test_sim.py
+endif
+	@echo "=== End-to-End Tests Complete ==="
 
-.PHONY: test-unit test-integration test-alive test-isotp test
+# Fast CI target: unit + integration + end-to-end (< 30 s)
+test: test-unit test-integration test-e2e
+
+.PHONY: test-unit test-integration test-e2e test-alive test-isotp test
 
 # =====================================================================
 # Documentation
@@ -274,7 +291,7 @@ clean:
 	rm -f $(CLIENT_OBJS) $(CLIENT_TARGET)
 	rm -f $(LIB_OBJS) $(SHARED_LIB) $(STATIC_LIB) $(SONAME) libdoip.so
 	rm -f $(LIB_TEST_SERVER) $(LIB_TEST_CLIENT) $(LIB_TEST_EXAMPLE)
-	rm -f test-frame test-uds test-isotp test-server test-alive-bin
+	rm -f test-frame test-uds test-isotp test-server test-alive-bin test-sim
 	rm -f transport/doip_io.o transport/doip_tls.o transport/doip_isotp.o
 	rm -f transport/doip_io.lo transport/doip_tls.lo transport/doip_isotp.lo
 

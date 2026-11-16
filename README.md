@@ -252,8 +252,14 @@ These flags inject the matching `-D` defines and automatically add the required 
 ## Running Tests
 
 ```bash
-# All unit tests (frame + UDS + ISO-TP) + integration tests — fast, < 15 s
+# Unit (frame + UDS + ISO-TP) + integration + end-to-end tests — fast, < 30 s
 make test
+
+# The same, with sanitizers
+make test SANITIZE="-fsanitize=address,undefined"
+
+# End-to-end: launches the real simulator binary and talks DoIP to it (needs python3)
+make test-e2e
 
 # ISO-TP unit tests only (no sockets, instant)
 make test-isotp
@@ -307,11 +313,10 @@ make clean && make DOIP_IPV6=1
 ./doip_client_demo ::1
 ```
 
-### Terminal 2 — Python Integration Tests
+### End-to-end tests of the binary
 
 ```bash
-python3 test/test_routing_act.py
-python3 test/test_multi_client.py
+make test-e2e    # builds ./test-sim, launches it with CLI flags, drives it over sockets (Python 3 stdlib)
 ```
 
 ---

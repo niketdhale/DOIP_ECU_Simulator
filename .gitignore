@@ -7,12 +7,13 @@
 *.dylib
 doip_ecu_sim
 doip_client_demo
-doip_discovery_test
 test-frame
 test-uds
 test-isotp
 test-server
 test-alive-bin
+test-sim
+__pycache__/
 test_lib_server
 test_lib_client
 test_lib_example
