@@ -142,8 +142,7 @@ DoIP_Tick() [doip_api.c]
 ├── core/
 │   ├── doip_frame.c/.h          # DoIP frame serialization / deserialization
 │   ├── doip_log.c/.h            # Thread-safe logging (colors, timestamps, modules)
-│   ├── doip_types.h             # Protocol structs & payload type constants
-│   └── doip_det.c               # Development Error Tracer stub
+│   └── doip_types.h             # Protocol structs & payload type constants
 │
 ├── transport/
 │   ├── doip_udp.c/.h            # UDP: vehicle announcements, VIN/EID, IPv6 dual-stack

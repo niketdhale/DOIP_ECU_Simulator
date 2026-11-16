@@ -1,6 +1,5 @@
 #include "doip_api.h"
 #include "core/doip_log.h"
-#include "core/doip_api.h"
 #include "state/doip_fsm.h"
 #include "transport/doip_udp.h"
 #include "transport/doip_tcp.h"

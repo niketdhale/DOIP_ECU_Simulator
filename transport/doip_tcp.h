@@ -3,7 +3,6 @@
 
 #include "config/doip_config.h"
 #include "core/doip_types.h"
-#include "core/doip_api.h"
 #include "transport/doip_uds.h"
 #include "transport/doip_io.h"
 #if DOIP_ENABLE_ISO_TP

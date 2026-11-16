@@ -6,7 +6,7 @@
  * directly with in-memory buffers. FSM callbacks are provided by
  * tests/mocks/mock_fsm.c.
  *
- * Links: unity.c  doip_uds.c  mock_fsm.c  doip_log.c  doip_det.c
+ * Links: unity.c  doip_uds.c  mock_fsm.c  doip_log.c
  *
  * Run: ./test-uds
  */

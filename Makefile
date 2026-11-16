@@ -42,7 +42,7 @@ PREFIX     ?= /usr/local
 DESTDIR    ?=
 
 # ===== Server (ECU Simulator) =====
-SRC_CORE = core/doip_frame.c core/doip_log.c core/doip_det.c
+SRC_CORE = core/doip_frame.c core/doip_log.c
 SRC_API  = doip_api.c
 SRC_UDP  = transport/doip_udp.c
 SRC_TCP  = transport/doip_tcp.c
@@ -200,7 +200,7 @@ INT_CFLAGS   = $(TEST_CFLAGS) -include tests/integration/doip_config_test.h
 
 # Production source files compiled into integration test binaries
 # Note: FEAT_TLS_SRCS already includes doip_io.c; otherwise we add it directly.
-PROD_SRCS    = core/doip_frame.c core/doip_log.c core/doip_det.c \
+PROD_SRCS    = core/doip_frame.c core/doip_log.c \
                doip_api.c \
                transport/doip_tcp.c transport/doip_udp.c transport/doip_uds.c \
                $(FEAT_TLS_SRCS) $(FEAT_ISOTP_SRCS) \
@@ -212,18 +212,18 @@ MOCK_FSM_SRC = tests/mocks/mock_fsm.c
 
 # ----- Unit: frame serialisation / deserialisation (no sockets) -----
 test-frame: tests/vendor/unity/unity.c tests/unit/test_frame.c \
-            core/doip_frame.c core/doip_log.c core/doip_det.c
+            core/doip_frame.c core/doip_log.c
 	$(CC) $(TEST_CFLAGS) -o $@ $^ $(TEST_LDFLAGS)
 
 # ----- Unit: UDS request processing + identity + hook (no sockets) --
 test-uds: $(UNITY_SRC) tests/unit/test_uds.c \
           transport/doip_uds.c $(MOCK_FSM_SRC) \
-          core/doip_log.c core/doip_det.c
+          core/doip_log.c
 	$(CC) $(TEST_CFLAGS) -o $@ $^ $(TEST_LDFLAGS)
 
 # ----- Unit: ISO-TP segmentation / reassembly (no sockets) ----------
 test-isotp: $(UNITY_SRC) tests/unit/test_isotp.c \
-            transport/doip_isotp.c core/doip_log.c core/doip_det.c
+            transport/doip_isotp.c core/doip_log.c
 	$(CC) $(TEST_CFLAGS) -DDOIP_ENABLE_ISO_TP=true -o $@ $^ $(TEST_LDFLAGS)
 
 # ----- Integration: full server lifecycle + TCP/UDP (port 23400) -----

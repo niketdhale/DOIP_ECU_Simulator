@@ -92,7 +92,6 @@
 #define DOIP_INITIAL_INACTIVITY_TIMEOUT_MS 2000U
 
 /* ===== Feature Toggles ===== */
-#define DOIP_DEV_ERROR_DETECT       false
 #define DOIP_SUPPORT_VIN_REQUEST    true
 #define DOIP_SUPPORT_EID_REQUEST    true
 #define DOIP_SUPPORT_ROUTING_ACT    true

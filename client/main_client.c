@@ -5,7 +5,7 @@
 #include "config/doip_config.h"
 #include "config/doip_uds_config.h"
 
-/* Satisfy extern declarations from config/doip_config.h and core/doip_api.h.
+/* Satisfy extern declarations from config/doip_config.h.
  * The client binary does not use server-side Rx/Tx callbacks. */
 DoIP_RxIndication   g_doip_rx_cb = NULL;
 DoIP_TxConfirmation g_doip_tx_cb = NULL;
