@@ -1,12 +1,18 @@
 name: CI
 
+# Every push runs CI. Pull requests from forks run it too; pull requests from
+# branches of this repository are skipped because the push run already covers
+# the same commit.
 on:
   push:
-    branches: [master]
   pull_request:
 
+env:
+  SANITIZE: -fsanitize=address,undefined -fno-sanitize-recover=undefined
+
 jobs:
-  build-and-test:
+  test:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -14,15 +20,24 @@ jobs:
         flags:
           - ""
           - "DOIP_2019=1"
-          - "DOIP_TLS=1 DOIP_IPV6=1 DOIP_ISOTP=1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build simulator, client and library (warnings are errors)
+        run: make -j"$(nproc)" all lib ${{ matrix.flags }} CC="gcc -Werror"
+      - name: Unit, integration and end-to-end tests under ASan/UBSan
+        run: make test ${{ matrix.flags }} SANITIZE="$SANITIZE"
+      - name: Alive-check timing tests (~22 s)
+        if: matrix.flags == ''
+        run: make test-alive SANITIZE="$SANITIZE"
+
+  features:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Install OpenSSL headers
         run: sudo apt-get update && sudo apt-get install -y libssl-dev
-      - name: Build simulator, client and library (warnings are errors)
-        run: make -j"$(nproc)" all lib ${{ matrix.flags }} CC="gcc -Werror"
-      - name: Unit + integration tests under ASan/UBSan
-        run: make test ${{ matrix.flags }} SANITIZE="-fsanitize=address,undefined -fno-sanitize-recover=undefined"
-      - name: Alive-check timing tests (~22 s)
-        if: matrix.flags == ''
-        run: make test-alive SANITIZE="-fsanitize=address,undefined -fno-sanitize-recover=undefined"
+      - name: Build with TLS, IPv6 and ISO-TP enabled (warnings are errors)
+        run: make -j"$(nproc)" all lib DOIP_TLS=1 DOIP_IPV6=1 DOIP_ISOTP=1 CC="gcc -Werror"
+      - name: ISO-TP, TLS and IPv6 server tests under ASan/UBSan
+        run: make test-features SANITIZE="$SANITIZE"

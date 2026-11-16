@@ -240,6 +240,11 @@ test-alive-bin: $(UNITY_SRC) tests/integration/test_alive_check.c $(PROD_SRCS)
 test-isotp-server: $(UNITY_SRC) tests/integration/test_isotp_server.c $(PROD_SRCS)
 	$(CC) $(INT_CFLAGS) -DDOIP_ENABLE_ISO_TP=true -o $@ $^ $(TEST_LDFLAGS)
 
+# The whole integration suite against the dual-stack (AF_INET6) server, plus a
+# native ::1 test. Skips itself with a message on hosts without IPv6.
+test-server-ipv6: $(UNITY_SRC) tests/integration/test_server.c $(PROD_SRCS)
+	$(CC) $(INT_CFLAGS) -DDOIP_ENABLE_IPV6=true -o $@ $^ $(TEST_LDFLAGS)
+
 # Throwaway self-signed certificates for the TLS tests (needs the openssl tool)
 CERT_DIR = tests/certs
 $(CERT_DIR)/server.crt:
@@ -290,11 +295,12 @@ else
 endif
 	@echo "=== End-to-End Tests Complete ==="
 
-test-features: test-isotp-server test-tls
+test-features: test-isotp-server test-tls test-server-ipv6
 	@echo ""
 	@echo "=== Feature Tests (port 23400) ==="
 	./test-isotp-server
 	./test-tls
+	./test-server-ipv6
 	@echo "=== Feature Tests Complete ==="
 
 # Fast CI target: unit + integration + end-to-end (< 30 s)
@@ -317,7 +323,7 @@ clean:
 	rm -f $(LIB_OBJS) $(SHARED_LIB) $(STATIC_LIB) $(SONAME) libdoip.so
 	rm -f $(LIB_TEST_SERVER) $(LIB_TEST_CLIENT) $(LIB_TEST_EXAMPLE)
 	rm -f test-frame test-uds test-isotp test-server test-alive-bin test-sim
-	rm -f test-isotp-server test-tls
+	rm -f test-isotp-server test-tls test-server-ipv6
 	rm -rf $(CERT_DIR)
 	rm -f transport/doip_io.o transport/doip_tls.o transport/doip_isotp.o
 	rm -f transport/doip_io.lo transport/doip_tls.lo transport/doip_isotp.lo

@@ -27,6 +27,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <stdbool.h>
 #include <time.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -1050,10 +1051,71 @@ void test_server_survives_disconnect_during_responses(void)
     client_destroy(c);
 }
 
+#if DOIP_ENABLE_IPV6
+/* ── IPv6 build only: native IPv6 next to the IPv4-mapped path ───────
+ * Every test above reaches the dual-stack server through 127.0.0.1; this
+ * one uses ::1 for both TCP and UDP. */
+
+/** True when the host can bind the IPv6 loopback address. */
+static bool host_has_ipv6_loopback(void)
+{
+    int fd = socket(AF_INET6, SOCK_STREAM, 0);
+    if (fd < 0) return false;
+    struct sockaddr_in6 lo = { .sin6_family = AF_INET6, .sin6_addr = IN6ADDR_LOOPBACK_INIT };
+    bool ok = bind(fd, (struct sockaddr *)&lo, sizeof(lo)) == 0;
+    close(fd);
+    return ok;
+}
+
+void test_ipv6_native_tcp_and_udp(void)
+{
+    /* TCP: routing activation + ReadDataByIdentifier over ::1 */
+    DoIP_Client_t *c = DoIP_Client_Create();
+    TEST_ASSERT_NOT_NULL(c);
+    DoIP_ClientConfig_t cfg = {
+        .tester_logical_addr = DOIP_TESTER_LOGICAL_ADDRESS,
+        .connect_timeout_ms = 2000, .response_timeout_ms = 2000, .routing_timeout_ms = 2000,
+    };
+    TEST_ASSERT_EQUAL_INT(DOIP_CLIENT_OK, DoIP_Client_Init(c, &cfg));
+    TEST_ASSERT_EQUAL_INT(DOIP_CLIENT_OK, DoIP_Client_Connect(c, "::1", DOIP_TCP_PORT));
+    TEST_ASSERT_EQUAL_INT(DOIP_CLIENT_OK, DoIP_Client_ActivateRouting(c, 0x00, NULL));
+    uint8_t req[] = { UDS_SID_READ_DATA_BY_ID, 0xF1, 0x90 };
+    uint8_t resp[DOIP_HEADER_SIZE + 64];
+    uint16_t rlen = 0;
+    TEST_ASSERT_EQUAL_INT(DOIP_CLIENT_OK, DoIP_Client_Transact(
+        c, DOIP_ECU_LOGICAL_ADDRESS, req, sizeof(req), resp, sizeof(resp), &rlen));
+    TEST_ASSERT_EQUAL_MEMORY(g_test_identity.vin, &resp[3], DOIP_VIN_LENGTH);
+    client_destroy(c);
+
+    /* UDP: vehicle identification request from ::1 is answered to ::1 */
+    int fd = socket(AF_INET6, SOCK_DGRAM, 0);
+    TEST_ASSERT_GREATER_THAN_INT(-1, fd);
+    struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    struct sockaddr_in6 srv = { .sin6_family = AF_INET6, .sin6_port = htons(DOIP_UDP_PORT),
+                                .sin6_addr = IN6ADDR_LOOPBACK_INIT };
+    uint8_t frame[DOIP_HEADER_SIZE];
+    size_t flen = raw_frame(frame, DOIP_PROTOCOL_VERSION, 0x0001, NULL, 0);
+    TEST_ASSERT_EQUAL_INT((int)flen, (int)sendto(fd, frame, flen, 0, (struct sockaddr *)&srv, sizeof(srv)));
+    ssize_t n = recv(fd, resp, sizeof(resp), 0);
+    close(fd);
+    TEST_ASSERT_EQUAL_INT(DOIP_HEADER_SIZE + 33, n);
+    TEST_ASSERT_EQUAL_HEX8(0x04, resp[3]);
+    TEST_ASSERT_EQUAL_MEMORY(g_test_identity.vin, resp + DOIP_HEADER_SIZE, DOIP_VIN_LENGTH);
+}
+#endif /* DOIP_ENABLE_IPV6 */
+
 /* ── Entry point ───────────────────────────────────────────────────── */
 
 int main(void)
 {
+#if DOIP_ENABLE_IPV6
+    if (!host_has_ipv6_loopback()) {
+        /* The dual-stack server cannot even open its sockets here */
+        printf("SKIPPED: this host has no IPv6 loopback (::1) - IPv6 server tests not run\n");
+        return 0;
+    }
+#endif
     UNITY_BEGIN();
 
     RUN_TEST(test_server_starts_and_stops);
@@ -1081,6 +1143,9 @@ int main(void)
     RUN_TEST(test_fault_force_nack_drop_ack_drop_response);
     RUN_TEST(test_functional_addressing);
     RUN_TEST(test_server_survives_disconnect_during_responses);
+#if DOIP_ENABLE_IPV6
+    RUN_TEST(test_ipv6_native_tcp_and_udp);
+#endif
 
     return UNITY_END();
 }

@@ -261,8 +261,9 @@ make test SANITIZE="-fsanitize=address,undefined"
 # End-to-end: launches the real simulator binary and talks DoIP to it (needs python3)
 make test-e2e
 
-# Feature paths: ISO-TP and TLS servers, each built with its own define
-# (needs OpenSSL headers and the openssl tool; generates tests/certs/)
+# Feature paths: ISO-TP, TLS and IPv6 dual-stack servers, each built with its
+# own define (needs OpenSSL headers and the openssl tool; generates tests/certs/;
+# the IPv6 part skips itself on hosts without ::1)
 make test-features
 
 # ISO-TP unit tests only (no sockets, instant)
