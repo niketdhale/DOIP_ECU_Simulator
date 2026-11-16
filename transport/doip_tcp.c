@@ -572,12 +572,15 @@ void doip_tcp_tick(uint32_t now_ms) {
 
         if (c->alive_check_sent_ms != 0) {
             /* Alive Check already pending — check for timeout */
-            if ((now_ms - c->alive_check_sent_ms) > DOIP_ALIVE_CHECK_TIMEOUT_MS) {
+            if ((int32_t)(now_ms - c->alive_check_sent_ms) > (int32_t)DOIP_ALIVE_CHECK_TIMEOUT_MS) {
                 LOG_WARN(DOIP_LOG_MODULE_TCP,
                          "Alive Check timeout for fd=%d — disconnecting", c->fd);
                 close_client(c);
             }
-        } else if ((now_ms - c->last_activity_ms) > DOIP_ALIVE_CHECK_INTERVAL_MS) {
+        /* Signed difference: last_activity_ms is stamped while polling and can
+         * be a millisecond newer than now_ms; unsigned math would wrap and
+         * fire a spurious probe. */
+        } else if ((int32_t)(now_ms - c->last_activity_ms) > (int32_t)DOIP_ALIVE_CHECK_INTERVAL_MS) {
             /* Client idle too long — probe with Alive Check Request */
             if (client_send_frame(c, DOIP_PT_ALIVE_CHECK_REQ, NULL, 0) > 0) {
                 c->alive_check_sent_ms = now_ms;

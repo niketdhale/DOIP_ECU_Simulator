@@ -26,12 +26,12 @@ int DoIP_Fsm_Init(uint32_t s3_timeout_ms, const DoIP_EcuIdentity_t *identity,
     g_fsm_ctx.timeout_violation_count = 0;
 
     /* Initialize underlying transports, threading identity and UDS hook */
-    if (doip_udp_init(identity) != 0 || doip_tcp_init() != 0) {
+    doip_uds_init(identity, uds_request_cb, user_ctx);  /* owns the identity UDP reads */
+    if (doip_udp_init() != 0 || doip_tcp_init() != 0) {
         LOG_ERROR(DOIP_LOG_MODULE_FSM, "Transport initialization failed");
         g_fsm_ctx.current_state = DOIP_STATE_ERROR;
         return -1;
     }
-    doip_uds_init(identity, uds_request_cb, user_ctx);
 
     g_fsm_ctx.current_state = DOIP_STATE_IDLE;
     LOG_INFO(DOIP_LOG_MODULE_FSM, "FSM initialized. S3=%u ms", s3_timeout_ms);
@@ -102,9 +102,9 @@ void DoIP_Fsm_MainFunction(void) {
     }
 
     /* 1. Non-blocking transport polling + alive check tick */
-    uint32_t now = get_time_ms();
     doip_udp_poll(NULL);
     doip_tcp_poll(NULL);
+    uint32_t now = get_time_ms();   /* after polling, so it is never older than rx timestamps */
     doip_tcp_tick(now);
 
     /* 2. S3 Server Timeout Enforcement (Negative Scenario: Session expiration) */
