@@ -76,6 +76,8 @@
 #define UDS_NRC_REQUEST_OUT_OF_RANGE    0x31
 #define UDS_NRC_SECURITY_ACCESS_DENIED  0x33
 #define UDS_NRC_INVALID_KEY             0x35
+#define UDS_NRC_EXCEEDED_ATTEMPTS       0x36
+#define UDS_NRC_TIME_DELAY_NOT_EXPIRED  0x37
 #define UDS_NRC_SERVICE_NOT_SUPPORTED_IN_SESSION 0x7F
 
 /* ===== Data Identifiers (DIDs) ===== */
@@ -92,7 +94,15 @@
 #define UDS_SUPPORT_WRITE_DATA          true   /* 0x2E: VIN, system name, serial number; needs a non-default session */
 #define UDS_SUPPORT_ROUTINE_CONTROL     true
 #define UDS_SUPPORT_TESTER_PRESENT      true
-#define UDS_SUPPORT_SECURITY_ACCESS     false
+#define UDS_SUPPORT_SECURITY_ACCESS     true
+
+/* ===== Security Access (0x27), level 1: 27 01 = request seed, 27 02 = send key =====
+ * Simulator algorithm: key = seed XOR UDS_SECURITY_KEY_MASK (4 bytes, big-endian). */
+#define UDS_SECURITY_KEY_MASK           0xA5C3F00DUL
+#define UDS_SECURITY_MAX_ATTEMPTS       3       /* Invalid keys before lockout          */
+#define UDS_SECURITY_LOCKOUT_MS         10000   /* Lockout duration after max attempts  */
+/* SIDs answered with NRC 0x33 (securityAccessDenied) until unlocked */
+#define UDS_SECURED_SIDS                0x2E
 
 /* ===== Timing Parameters ===== */
 #define UDS_P2_SERVER_MS                50

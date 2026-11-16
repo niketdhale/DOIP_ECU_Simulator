@@ -281,7 +281,8 @@ void test_suppress_bit_ignored_for_services_without_subfunction(void)
 static UdsClientContext_t make_extended_ctx(void)
 {
     UdsClientContext_t ctx = make_ctx();
-    ctx.current_session = UDS_SESSION_EXTENDED_STATE;
+    ctx.current_session   = UDS_SESSION_EXTENDED_STATE;
+    ctx.security_unlocked = true;
     return ctx;
 }
 
@@ -395,6 +396,87 @@ void test_non_default_only_services_rejected_in_default_session(void)
 
     uint8_t comm_ctrl[] = { UDS_SID_COMMUNICATION_CONTROL, 0x00, 0x01 };  /* auto-responded SID */
     TEST_ASSERT_EQUAL_INT(-1, process(&ctx, comm_ctrl, sizeof(comm_ctrl)));
+    TEST_ASSERT_EQUAL_HEX8(UDS_NRC_SERVICE_NOT_SUPPORTED_IN_SESSION, s_resp[2]);
+}
+
+/* ── Security Access (0x27) ───────────────────────────────────────── */
+
+/** Request a seed and send a key; returns the rc of the sendKey request. */
+static int seed_and_key(UdsClientContext_t *ctx, uint32_t key_xor)
+{
+    uint8_t seed_req[] = { UDS_SID_SECURITY_ACCESS, 0x01 };
+    TEST_ASSERT_EQUAL_INT(0, process(ctx, seed_req, sizeof(seed_req)));
+    TEST_ASSERT_EQUAL_UINT16(6, s_rlen);
+    uint32_t seed = ((uint32_t)s_resp[2] << 24) | ((uint32_t)s_resp[3] << 16) |
+                    ((uint32_t)s_resp[4] << 8) | s_resp[5];
+    TEST_ASSERT_NOT_EQUAL(0, seed);
+    uint32_t key = seed ^ key_xor;
+    uint8_t key_req[] = { UDS_SID_SECURITY_ACCESS, 0x02,
+                          (uint8_t)(key >> 24), (uint8_t)(key >> 16), (uint8_t)(key >> 8), (uint8_t)key };
+    return process(ctx, key_req, sizeof(key_req));
+}
+
+static UdsClientContext_t make_locked_extended_ctx(void)
+{
+    UdsClientContext_t ctx = make_extended_ctx();
+    ctx.security_unlocked = false;
+    return ctx;
+}
+
+void test_security_access_unlocks_write(void)
+{
+    UdsClientContext_t ctx = make_locked_extended_ctx();
+    uint8_t wr[] = { UDS_SID_WRITE_DATA_BY_ID, 0xF1, 0x8C, 'Z' };
+
+    TEST_ASSERT_EQUAL_INT(-1, process(&ctx, wr, sizeof(wr)));
+    TEST_ASSERT_EQUAL_HEX8(UDS_NRC_SECURITY_ACCESS_DENIED, s_resp[2]);
+
+    TEST_ASSERT_EQUAL_INT(0, seed_and_key(&ctx, UDS_SECURITY_KEY_MASK));
+    TEST_ASSERT_EQUAL_HEX8(UDS_SID_SECURITY_ACCESS_RES, s_resp[0]);
+    TEST_ASSERT_TRUE(ctx.security_unlocked);
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, wr, sizeof(wr)));
+
+    /* Unlocked ECU reports a zero seed */
+    uint8_t seed_req[] = { UDS_SID_SECURITY_ACCESS, 0x01 };
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, seed_req, sizeof(seed_req)));
+    TEST_ASSERT_EACH_EQUAL_HEX8(0x00, &s_resp[2], 4);
+}
+
+void test_security_access_wrong_key_and_lockout(void)
+{
+    UdsClientContext_t ctx = make_locked_extended_ctx();
+    for (int i = 1; i < UDS_SECURITY_MAX_ATTEMPTS; i++) {
+        TEST_ASSERT_EQUAL_INT(-1, seed_and_key(&ctx, ~(uint32_t)UDS_SECURITY_KEY_MASK));
+        TEST_ASSERT_EQUAL_HEX8(UDS_NRC_INVALID_KEY, s_resp[2]);
+    }
+    TEST_ASSERT_EQUAL_INT(-1, seed_and_key(&ctx, ~(uint32_t)UDS_SECURITY_KEY_MASK));
+    TEST_ASSERT_EQUAL_HEX8(UDS_NRC_EXCEEDED_ATTEMPTS, s_resp[2]);
+    TEST_ASSERT_FALSE(ctx.security_unlocked);
+
+    /* Locked out: even a seed request is refused */
+    uint8_t seed_req[] = { UDS_SID_SECURITY_ACCESS, 0x01 };
+    TEST_ASSERT_EQUAL_INT(-1, process(&ctx, seed_req, sizeof(seed_req)));
+    TEST_ASSERT_EQUAL_HEX8(UDS_NRC_TIME_DELAY_NOT_EXPIRED, s_resp[2]);
+}
+
+void test_security_access_sequence_and_format_errors(void)
+{
+    UdsClientContext_t ctx = make_locked_extended_ctx();
+    uint8_t key_first[] = { UDS_SID_SECURITY_ACCESS, 0x02, 0, 0, 0, 0 };
+    TEST_ASSERT_EQUAL_INT(-1, process(&ctx, key_first, sizeof(key_first)));
+    TEST_ASSERT_EQUAL_HEX8(UDS_NRC_REQUEST_SEQUENCE_ERROR, s_resp[2]);
+
+    uint8_t bad_level[] = { UDS_SID_SECURITY_ACCESS, 0x05 };
+    TEST_ASSERT_EQUAL_INT(-1, process(&ctx, bad_level, sizeof(bad_level)));
+    TEST_ASSERT_EQUAL_HEX8(UDS_NRC_SUB_FUNCTION_NOT_SUPPORTED, s_resp[2]);
+
+    uint8_t short_key[] = { UDS_SID_SECURITY_ACCESS, 0x02, 0x00 };
+    TEST_ASSERT_EQUAL_INT(-1, process(&ctx, short_key, sizeof(short_key)));
+    TEST_ASSERT_EQUAL_HEX8(UDS_NRC_INCORRECT_MESSAGE_LENGTH, s_resp[2]);
+
+    UdsClientContext_t def = make_ctx();
+    uint8_t seed_req[] = { UDS_SID_SECURITY_ACCESS, 0x01 };
+    TEST_ASSERT_EQUAL_INT(-1, process(&def, seed_req, sizeof(seed_req)));
     TEST_ASSERT_EQUAL_HEX8(UDS_NRC_SERVICE_NOT_SUPPORTED_IN_SESSION, s_resp[2]);
 }
 
@@ -574,6 +656,9 @@ int main(void)
     /* Routine Control */
     RUN_TEST(test_routine_control_basic);
     RUN_TEST(test_non_default_only_services_rejected_in_default_session);
+    RUN_TEST(test_security_access_unlocks_write);
+    RUN_TEST(test_security_access_wrong_key_and_lockout);
+    RUN_TEST(test_security_access_sequence_and_format_errors);
     RUN_TEST(test_ecu_reset_returns_to_default_session);
     RUN_TEST(test_ecu_reset_invalid_requests);
     RUN_TEST(test_read_multiple_dids);

@@ -3,6 +3,7 @@
 #include "state/doip_fsm.h"
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <time.h>
 
 /* Runtime ECU identity and optional UDS request hook */
@@ -26,6 +27,7 @@ static int neg(uint8_t *res, uint16_t *res_len, uint8_t sid, uint8_t nrc) {
 static void enter_default_session(UdsClientContext_t *ctx) {
     ctx->current_session   = UDS_SESSION_DEFAULT_STATE;
     ctx->security_unlocked = false;
+    ctx->security_seed     = 0;
 }
 
 /* ===== Service Handlers (Stateless: accept ctx pointer) ===== */
@@ -126,6 +128,56 @@ static int handle_write_data_by_id(UdsClientContext_t *ctx, const uint8_t *req, 
     return 0;
 }
 
+static void put_be32(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t)(v >> 24); p[1] = (uint8_t)(v >> 16); p[2] = (uint8_t)(v >> 8); p[3] = (uint8_t)v;
+}
+
+/* 0x27 level 1. ponytail: rand() seed and XOR key are simulator-grade, not
+ * a real seed/key algorithm — replace via the on_uds_request hook if needed. */
+static int handle_security_access(UdsClientContext_t *ctx, const uint8_t *req, uint16_t req_len, uint8_t *res, uint16_t *res_len) {
+    const uint8_t sid = UDS_SID_SECURITY_ACCESS;
+    if (req_len < 2) return neg(res, res_len, sid, UDS_NRC_INCORRECT_MESSAGE_LENGTH);
+    uint8_t sub = req[1] & 0x7F;
+    if (sub != 0x01 && sub != 0x02) return neg(res, res_len, sid, UDS_NRC_SUB_FUNCTION_NOT_SUPPORTED);
+    if (req_len != (sub == 0x01 ? 2 : 6)) return neg(res, res_len, sid, UDS_NRC_INCORRECT_MESSAGE_LENGTH);
+
+    if (ctx->security_lockout_ms != 0) {
+        /* signed: the |1 below can put the stamp 1 ms ahead of the clock */
+        if ((int32_t)(get_time_ms() - ctx->security_lockout_ms) < (int32_t)UDS_SECURITY_LOCKOUT_MS)
+            return neg(res, res_len, sid, UDS_NRC_TIME_DELAY_NOT_EXPIRED);
+        ctx->security_lockout_ms = 0;
+        ctx->security_attempts   = 0;
+    }
+
+    res[0] = UDS_SID_SECURITY_ACCESS_RES; res[1] = sub;
+    if (sub == 0x01) {                       /* requestSeed */
+        /* An already-unlocked ECU reports an all-zero seed */
+        ctx->security_seed = ctx->security_unlocked ? 0 : ((uint32_t)rand() | 1U);
+        put_be32(&res[2], ctx->security_seed);
+        *res_len = 6;
+        return 0;
+    }
+
+    /* sendKey */
+    if (ctx->security_seed == 0) return neg(res, res_len, sid, UDS_NRC_REQUEST_SEQUENCE_ERROR);
+    uint32_t key = ((uint32_t)req[2] << 24) | ((uint32_t)req[3] << 16) | ((uint32_t)req[4] << 8) | req[5];
+    uint32_t expected = ctx->security_seed ^ (uint32_t)UDS_SECURITY_KEY_MASK;
+    ctx->security_seed = 0;                  /* a seed is good for one attempt */
+    if (key != expected) {
+        if (++ctx->security_attempts >= UDS_SECURITY_MAX_ATTEMPTS) {
+            ctx->security_lockout_ms = get_time_ms() | 1U;   /* never 0 = "not locked" */
+            LOG_WARN(DOIP_LOG_MODULE_UDS, "Security Access locked out for %u ms", (unsigned)UDS_SECURITY_LOCKOUT_MS);
+            return neg(res, res_len, sid, UDS_NRC_EXCEEDED_ATTEMPTS);
+        }
+        return neg(res, res_len, sid, UDS_NRC_INVALID_KEY);
+    }
+    ctx->security_unlocked = true;
+    ctx->security_attempts = 0;
+    LOG_INFO(DOIP_LOG_MODULE_UDS, "Security Access unlocked");
+    *res_len = 2;
+    return 0;
+}
+
 static int handle_tester_present(UdsClientContext_t *ctx, const uint8_t *req, uint16_t req_len, uint8_t *res, uint16_t *res_len) {
     if (req_len < 2) {
         res[0] = 0x7F; res[1] = UDS_SID_TESTER_PRESENT; res[2] = UDS_NRC_INCORRECT_MESSAGE_LENGTH; *res_len = 3; return -1;
@@ -174,6 +226,9 @@ static const struct { uint8_t sid; uint8_t res_id; int (*handler)(UdsClientConte
 #if UDS_SUPPORT_WRITE_DATA
     { UDS_SID_WRITE_DATA_BY_ID, UDS_SID_WRITE_DATA_BY_ID_RES, handle_write_data_by_id, true },
 #endif
+#if UDS_SUPPORT_SECURITY_ACCESS
+    { UDS_SID_SECURITY_ACCESS, UDS_SID_SECURITY_ACCESS_RES, handle_security_access, true },
+#endif
 #if UDS_SUPPORT_TESTER_PRESENT
     { UDS_SID_TESTER_PRESENT,  UDS_SID_TESTER_PRESENT_RES,  handle_tester_present,  true },
 #endif
@@ -196,11 +251,25 @@ static bool sid_has_subfunction(uint8_t sid) {
     }
 }
 
+static bool sid_in(uint8_t sid, const uint8_t *list, size_t n) {
+    for (size_t i = 0; i < n; i++) if (list[i] == sid) return true;
+    return false;
+}
+
 /* Services only available in a non-default session (extended / programming). */
 static bool sid_needs_non_default_session(uint8_t sid) {
     const uint8_t list[] = { UDS_NON_DEFAULT_SESSION_SIDS };
-    for (size_t i = 0; i < sizeof(list); i++) if (list[i] == sid) return true;
-    return false;
+    return sid_in(sid, list, sizeof(list));
+}
+
+/* Services that need Security Access to be unlocked first. */
+static bool sid_needs_security(uint8_t sid) {
+#if UDS_SUPPORT_SECURITY_ACCESS
+    const uint8_t list[] = { UDS_SECURED_SIDS };
+    return sid_in(sid, list, sizeof(list));
+#else
+    (void)sid; return false;
+#endif
 }
 
 int doip_uds_init(const DoIP_EcuIdentity_t *identity,
@@ -210,6 +279,7 @@ int doip_uds_init(const DoIP_EcuIdentity_t *identity,
     if (identity) g_identity = *identity;
     g_uds_request_cb = uds_request_cb;
     g_uds_user_ctx   = user_ctx;
+    srand((unsigned)time(NULL));
     LOG_INFO(DOIP_LOG_MODULE_UDS, "UDS module initialized (per-client state)");
     return 0;
 }
@@ -253,6 +323,10 @@ int doip_uds_process_request(UdsClientContext_t *ctx, const uint8_t *req_data, u
     if (ctx->current_session == UDS_SESSION_DEFAULT_STATE && sid_needs_non_default_session(sid)) {
         doip_uds_update_activity(ctx);
         return neg(res_data, res_len, sid, UDS_NRC_SERVICE_NOT_SUPPORTED_IN_SESSION);
+    }
+    if (!ctx->security_unlocked && sid_needs_security(sid)) {
+        doip_uds_update_activity(ctx);
+        return neg(res_data, res_len, sid, UDS_NRC_SECURITY_ACCESS_DENIED);
     }
 
     /* Tester asked for no positive response: the service still runs and

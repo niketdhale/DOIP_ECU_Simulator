@@ -18,7 +18,9 @@ typedef struct {
     UdsSessionState_t current_session;
     uint32_t          last_activity_ms;
     bool              security_unlocked;
-    uint8_t           security_attempts;
+    uint8_t           security_attempts;    /* Consecutive invalid keys                    */
+    uint32_t          security_seed;        /* Seed awaiting its key; 0 = none requested   */
+    uint32_t          security_lockout_ms;  /* Time of lockout start; 0 = not locked out   */
 } UdsClientContext_t;
 
 /* API: Stateless (Context is passed by caller) */

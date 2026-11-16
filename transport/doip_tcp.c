@@ -486,6 +486,7 @@ int doip_tcp_poll(DoIP_RxIndication rx_cb) {
                 client->fd    = new_fd;
                 client->state = DOIP_TCP_STATE_CONNECTED;
                 client->last_activity_ms = get_time_ms();
+                memset(&client->uds_ctx, 0, sizeof(client->uds_ctx));  /* slot may be reused */
                 client->uds_ctx.current_session  = UDS_ECU_DEFAULT_SESSION;
                 client->uds_ctx.last_activity_ms = get_time_ms();
                 client->rx_bytes = 0;
@@ -517,6 +518,7 @@ int doip_tcp_poll(DoIP_RxIndication rx_cb) {
                 client->fd    = new_fd;
                 client->state = DOIP_TCP_STATE_CONNECTED;
                 client->last_activity_ms = get_time_ms();
+                memset(&client->uds_ctx, 0, sizeof(client->uds_ctx));  /* slot may be reused */
                 client->uds_ctx.current_session  = UDS_ECU_DEFAULT_SESSION;
                 client->uds_ctx.last_activity_ms = get_time_ms();
                 client->rx_bytes = 0;

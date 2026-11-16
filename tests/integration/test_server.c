@@ -743,6 +743,19 @@ void test_written_vin_appears_in_udp_response(void)
     TEST_ASSERT_EQUAL_INT(DOIP_CLIENT_OK, DoIP_Client_Transact(
         c, DOIP_ECU_LOGICAL_ADDRESS, session, sizeof(session), resp, sizeof(resp), &rlen));
 
+    /* Unlock: 27 01 → seed, 27 02 key = seed XOR mask */
+    uint8_t seed_req[] = { UDS_SID_SECURITY_ACCESS, 0x01 };
+    TEST_ASSERT_EQUAL_INT(DOIP_CLIENT_OK, DoIP_Client_Transact(
+        c, DOIP_ECU_LOGICAL_ADDRESS, seed_req, sizeof(seed_req), resp, sizeof(resp), &rlen));
+    TEST_ASSERT_EQUAL_UINT16(6, rlen);
+    const uint8_t mask[4] = { (uint8_t)(UDS_SECURITY_KEY_MASK >> 24), (uint8_t)(UDS_SECURITY_KEY_MASK >> 16),
+                              (uint8_t)(UDS_SECURITY_KEY_MASK >> 8),  (uint8_t)UDS_SECURITY_KEY_MASK };
+    uint8_t key_req[6] = { UDS_SID_SECURITY_ACCESS, 0x02 };
+    for (int i = 0; i < 4; i++) key_req[2 + i] = resp[2 + i] ^ mask[i];
+    TEST_ASSERT_EQUAL_INT(DOIP_CLIENT_OK, DoIP_Client_Transact(
+        c, DOIP_ECU_LOGICAL_ADDRESS, key_req, sizeof(key_req), resp, sizeof(resp), &rlen));
+    TEST_ASSERT_EQUAL_HEX8(UDS_SID_SECURITY_ACCESS_RES, resp[0]);
+
     uint8_t wr[3 + DOIP_VIN_LENGTH] = { UDS_SID_WRITE_DATA_BY_ID, 0xF1, 0x90 };
     memcpy(&wr[3], "WRITTENVIN0000001", DOIP_VIN_LENGTH);
     TEST_ASSERT_EQUAL_INT(DOIP_CLIENT_OK, DoIP_Client_Transact(
