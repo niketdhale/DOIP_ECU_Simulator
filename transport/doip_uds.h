@@ -33,6 +33,13 @@ void doip_uds_update_activity(UdsClientContext_t *ctx);
 bool doip_uds_is_session_active(const UdsClientContext_t *ctx, uint32_t timeout_ms);
 void doip_uds_deinit(void);
 
+/**
+ * Functional addressing rule (ISO 14229-1): negative responses with NRC
+ * 0x11, 0x12, 0x31, 0x7E or 0x7F are not sent for functionally addressed
+ * requests. Returns true when @p res is such a response and must be dropped.
+ */
+bool doip_uds_functional_suppresses(const uint8_t *res, uint16_t res_len);
+
 /** The single runtime ECU identity (also used for UDP announcements);
  *  reflects DIDs written through WriteDataByIdentifier. */
 const DoIP_EcuIdentity_t *doip_uds_identity(void);

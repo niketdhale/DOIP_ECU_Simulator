@@ -136,6 +136,10 @@ typedef struct {
      *  Valid: 0x0001-0x0DFF, 0x1000-0x7FFF, 0x8000-0xDFFF. */
     uint16_t logical_address;
 
+    /** Functional (group) address the ECU also answers to;
+     *  0 = compiled-in DOIP_FUNCTIONAL_LOGICAL_ADDRESS (0xE400). */
+    uint16_t functional_address;
+
     /** UDP + TCP port; 0 = compiled-in DOIP_TCP_PORT (13400). */
     uint16_t port;
 

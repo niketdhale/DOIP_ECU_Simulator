@@ -46,6 +46,7 @@ static void usage(const char *prog) {
     printf("Usage: %s [options]\n"
            "  --vin <17 chars>      Vehicle identification number\n"
            "  --address <addr>      ECU logical address, e.g. 0x1003\n"
+           "  --functional-address <addr>  Functional group address (default 0x%04X)\n"
            "  --port <port>         UDP + TCP port (default %u)\n"
            "  --log-level <1-4>     1=WARN 2=INFO 3=DEBUG 4=VERBOSE (default 3)\n"
            "  --log-file <path>     Also write the log to a file\n"
@@ -55,7 +56,7 @@ static void usage(const char *prog) {
            "  --drop-response       Never send UDS responses\n"
            "  --force-nack <code>   Reject every diagnostic message with this NACK code\n"
            "  --help                Show this help\n",
-           prog, (unsigned)DOIP_TCP_PORT);
+           prog, (unsigned)DOIP_FUNCTIONAL_LOGICAL_ADDRESS, (unsigned)DOIP_TCP_PORT);
 }
 
 /* Parse an unsigned number (decimal or 0x hex) in [1, max]; exits on bad input. */
@@ -106,6 +107,7 @@ int main(int argc, char *argv[]) {
     static const struct option opts[] = {
         { "vin",       required_argument, NULL, 'v' },
         { "address",   required_argument, NULL, 'a' },
+        { "functional-address", required_argument, NULL, 'F' },
         { "port",      required_argument, NULL, 'p' },
         { "log-level", required_argument, NULL, 'l' },
         { "log-file",  required_argument, NULL, 'f' },
@@ -129,6 +131,7 @@ int main(int argc, char *argv[]) {
                 memcpy(identity.vin, optarg, DOIP_VIN_LENGTH);
                 break;
             case 'a': config.logical_address = (uint16_t)parse_num("address", optarg, 0xFFFF); break;
+            case 'F': config.functional_address = (uint16_t)parse_num("functional-address", optarg, 0xFFFF); break;
             case 'p': config.port            = (uint16_t)parse_num("port", optarg, 65535);     break;
             case 'l': config.log_level       = (uint8_t)parse_num("log-level", optarg, 4);     break;
             case 'f': config.log_file_path   = optarg; break;

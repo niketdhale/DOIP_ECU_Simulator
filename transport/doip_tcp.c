@@ -281,11 +281,12 @@ next_frame:
 
             uint16_t target_addr = get_be16(pl + 2);
             uint8_t  nack_code   = 0;
+            bool     functional  = (target_addr == g_doip_functional_addr);
 
             if (client->state != DOIP_TCP_STATE_ACTIVATED ||
                 tester_addr != client->tester_logical_addr)
                 nack_code = DOIP_DIAG_NACK_INVALID_SA;
-            else if (target_addr != g_doip_ecu_logical_addr)
+            else if (target_addr != g_doip_ecu_logical_addr && !functional)
                 nack_code = DOIP_DIAG_NACK_UNKNOWN_TA;
 
             if (g_faults.force_diag_nack) nack_code = g_faults.force_diag_nack;
@@ -305,8 +306,9 @@ next_frame:
             uint16_t uds_req_len = (uint16_t)(hdr.payload_length - 4);
 
             LOG_DEBUG(DOIP_LOG_MODULE_TCP,
-                      "Diagnostic Req (fd=%d): Tester=0x%04X, UDS_Len=%u",
-                      client->fd, tester_addr, uds_req_len);
+                      "Diagnostic Req (fd=%d): Tester=0x%04X, Target=0x%04X%s, UDS_Len=%u",
+                      client->fd, tester_addr, target_addr,
+                      functional ? " (functional)" : "", uds_req_len);
 
 #if DOIP_ENABLE_ISO_TP
             /* ISO-TP reassembly: feed the DoIP payload, get UDS bytes out */
@@ -341,10 +343,17 @@ next_frame:
                          "UDS response too long (%u) — dropped", uds_res_len);
                 uds_res_len = 0;
             }
+            /* Functionally addressed: "not supported" style negative responses
+             * stay silent so that only the ECUs that implement the request answer. */
+            if (functional && doip_uds_functional_suppresses(uds_response, uds_res_len))
+                uds_res_len = 0;
+
             /* The DoIP ACK confirms receipt of the request and is sent even
-             * when the UDS layer suppresses its positive response. */
+             * when no UDS response follows. Its source is the address the
+             * tester targeted; the UDS response itself always comes from the
+             * ECU's physical address. */
             uint8_t ack_payload[5];
-            put_be16(&ack_payload[0], g_doip_ecu_logical_addr);
+            put_be16(&ack_payload[0], target_addr);
             put_be16(&ack_payload[2], tester_addr);
             ack_payload[4] = 0x00;
             if (!g_faults.drop_diag_ack)

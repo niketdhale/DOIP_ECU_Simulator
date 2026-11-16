@@ -960,6 +960,72 @@ void test_fault_force_nack_drop_ack_drop_response(void)
     close(fd);
 }
 
+/* ── Functional addressing ─────────────────────────────────────────── */
+
+/** Send one diagnostic message and read until @p expected bytes arrived (or timeout). */
+static size_t diag_exchange(int fd, uint16_t target, const uint8_t *uds, uint8_t uds_len,
+                            uint8_t *resp, size_t resp_size, size_t expected)
+{
+    uint8_t pl[4 + 16] = { 0x0E, 0x00, (uint8_t)(target >> 8), (uint8_t)target };
+    memcpy(pl + 4, uds, uds_len);
+    uint8_t frame[DOIP_HEADER_SIZE + sizeof(pl)];
+    size_t flen = raw_frame(frame, DOIP_PROTOCOL_VERSION, DOIP_PT_DIAGNOSTIC_MSG, pl, 4U + uds_len);
+
+    struct timeval tv = { .tv_sec = 0, .tv_usec = 400000 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    send(fd, frame, flen, 0);
+    size_t got = 0;
+    while (got < resp_size) {              /* keeps reading past `expected` to catch extra frames */
+        ssize_t n = recv(fd, resp + got, resp_size - got, 0);
+        if (n <= 0) break;
+        got += (size_t)n;
+        if (got > expected) break;
+    }
+    return got;
+}
+
+/* Test 24: functional requests — ACK from the functional address, answer from the
+ * ECU's own address, and "not supported" negative responses stay silent */
+void test_functional_addressing(void)
+{
+    const uint16_t func = DOIP_FUNCTIONAL_LOGICAL_ADDRESS;
+    const uint8_t  ecu_hi = DOIP_ECU_LOGICAL_ADDRESS >> 8, ecu_lo = DOIP_ECU_LOGICAL_ADDRESS & 0xFF;
+    uint8_t resp[96];
+    int fd = raw_activated_socket();
+    TEST_ASSERT_GREATER_THAN_INT(-1, fd);
+
+    /* TesterPresent: DoIP ACK (13) + positive response (14) */
+    const uint8_t tp[] = { 0x3E, 0x00 };
+    TEST_ASSERT_EQUAL_UINT(13 + 14, diag_exchange(fd, func, tp, sizeof(tp), resp, sizeof(resp), 13 + 14));
+    TEST_ASSERT_EQUAL_HEX8(0x02, resp[3]);                       /* PT 0x8002 */
+    TEST_ASSERT_EQUAL_HEX8((uint8_t)(func >> 8), resp[8]);       /* ACK source = functional address */
+    TEST_ASSERT_EQUAL_HEX8((uint8_t)func,        resp[9]);
+    TEST_ASSERT_EQUAL_HEX8(0x01, resp[13 + 3]);                  /* PT 0x8001 */
+    TEST_ASSERT_EQUAL_HEX8(ecu_hi, resp[13 + 8]);                /* response source = physical address */
+    TEST_ASSERT_EQUAL_HEX8(ecu_lo, resp[13 + 9]);
+    TEST_ASSERT_EQUAL_HEX8(0x7E, resp[13 + 12]);
+
+    /* Unsupported service (NRC 0x11) and unknown DID (NRC 0x31): ACK only */
+    const uint8_t unsupported[] = { 0x99, 0x00 };
+    TEST_ASSERT_EQUAL_UINT(13, diag_exchange(fd, func, unsupported, sizeof(unsupported), resp, sizeof(resp), 13));
+    const uint8_t bad_did[] = { 0x22, 0x12, 0x34 };
+    TEST_ASSERT_EQUAL_UINT(13, diag_exchange(fd, func, bad_did, sizeof(bad_did), resp, sizeof(resp), 13));
+
+    /* Other negative responses are still sent: wrong length → 7F 3E 13 */
+    const uint8_t short_tp[] = { 0x3E };
+    TEST_ASSERT_EQUAL_UINT(13 + 15, diag_exchange(fd, func, short_tp, sizeof(short_tp), resp, sizeof(resp), 13 + 15));
+    const uint8_t nrc13[] = { 0x7F, 0x3E, 0x13 };
+    TEST_ASSERT_EQUAL_MEMORY(nrc13, resp + 13 + 12, 3);
+
+    /* Physically addressed, the same unsupported service does get its 7F 99 11 */
+    TEST_ASSERT_EQUAL_UINT(13 + 15, diag_exchange(fd, DOIP_ECU_LOGICAL_ADDRESS, unsupported, sizeof(unsupported),
+                                                  resp, sizeof(resp), 13 + 15));
+    const uint8_t nrc11[] = { 0x7F, 0x99, 0x11 };
+    TEST_ASSERT_EQUAL_MEMORY(nrc11, resp + 13 + 12, 3);
+    TEST_ASSERT_EQUAL_HEX8(ecu_hi, resp[8]);                     /* ACK source = physical address */
+    close(fd);
+}
+
 /* ── Entry point ───────────────────────────────────────────────────── */
 
 int main(void)
@@ -989,6 +1055,7 @@ int main(void)
     RUN_TEST(test_fault_response_delay_sends_pending_and_busy);
     RUN_TEST(test_client_waits_through_response_pending);
     RUN_TEST(test_fault_force_nack_drop_ack_drop_response);
+    RUN_TEST(test_functional_addressing);
 
     return UNITY_END();
 }

@@ -47,6 +47,9 @@
 /* Valid ECU Ranges: 0x0001-0x0DFF, 0x1000-0x7FFF, 0x8000-0xDFFF */
 #define DOIP_ECU_LOGICAL_ADDRESS    0x1003U
 #define DOIP_OBD_LOGICAL_ADDRESS    0x1340U
+/* Functional (group) address this ECU also answers to. ISO 13400-2 reserves
+ * 0xE400-0xEFFF for vehicle-manufacturer-defined functional group addresses. */
+#define DOIP_FUNCTIONAL_LOGICAL_ADDRESS 0xE400U
 #define DOIP_TESTER_LOGICAL_ADDRESS 0x0E00U     /* Default tester address used by the client */
 /* ISO 13400-2: range reserved for external test equipment; routing
  * activation from any other source address is rejected (code 0x00). */
@@ -139,9 +142,10 @@ typedef int  (*DoIP_FrameReceivedCb)   (int client_fd, uint16_t pt,
                                          const uint8_t *payload, uint32_t plen,
                                          void *user_ctx);
 
-/* Runtime ECU logical address and UDP/TCP port (set by DoIP_Init from
- * DoIP_Config_t; default to DOIP_ECU_LOGICAL_ADDRESS / DOIP_TCP_PORT). */
+/* Runtime ECU logical address, functional address and UDP/TCP port (set by
+ * DoIP_Init from DoIP_Config_t; default to the DOIP_* macros above). */
 extern uint16_t                 g_doip_ecu_logical_addr;
+extern uint16_t                 g_doip_functional_addr;
 extern uint16_t                 g_doip_port;
 
 extern DoIP_RxIndication        g_doip_rx_cb;

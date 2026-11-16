@@ -430,6 +430,18 @@ bool doip_uds_is_session_active(const UdsClientContext_t *ctx, uint32_t timeout_
     return (get_time_ms() - ctx->last_activity_ms) < timeout_ms;
 }
 
+bool doip_uds_functional_suppresses(const uint8_t *res, uint16_t res_len) {
+    if (!res || res_len != 3 || res[0] != 0x7F) return false;
+    switch (res[2]) {
+        case UDS_NRC_SERVICE_NOT_SUPPORTED:
+        case UDS_NRC_SUB_FUNCTION_NOT_SUPPORTED:
+        case UDS_NRC_REQUEST_OUT_OF_RANGE:
+        case UDS_NRC_SUB_FUNCTION_NOT_SUPPORTED_IN_SESSION:
+        case UDS_NRC_SERVICE_NOT_SUPPORTED_IN_SESSION: return true;
+        default: return false;
+    }
+}
+
 const DoIP_EcuIdentity_t *doip_uds_identity(void) { return &g_identity; }
 
 void doip_uds_deinit(void) { LOG_INFO(DOIP_LOG_MODULE_UDS, "UDS module deinitialized"); }

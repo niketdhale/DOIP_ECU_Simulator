@@ -285,7 +285,8 @@ make test-alive && ./test-alive-bin
 ./doip_ecu_sim
 
 # Override identity / addressing without recompiling:
-./doip_ecu_sim --vin WAUZZZ8V0JA000001 --address 0x2002 --port 14400 --log-level 2
+./doip_ecu_sim --vin WAUZZZ8V0JA000001 --address 0x2002 --functional-address 0xE401 \
+               --port 14400 --log-level 2
 ./doip_ecu_sim --help
 
 # With TLS:
@@ -714,6 +715,13 @@ The response is 9 bytes: tester address(2), entity address(2), code(1), reserved
 |-----------|-----------|
 | Routing not activated, or source address differs from the activated one | `0x02` invalid source address |
 | Target address is not `DOIP_ECU_LOGICAL_ADDRESS` | `0x03` unknown target address |
+
+### Functional addressing
+
+The ECU also answers diagnostic messages sent to its functional group address (`DOIP_FUNCTIONAL_LOGICAL_ADDRESS`, default `0xE400`; `DoIP_Config_t::functional_address` or `--functional-address` at runtime).
+
+- The DoIP ACK carries the functional address as its source; the UDS response comes from the ECU's own logical address.
+- As ISO 14229-1 requires, negative responses with NRC `0x11`, `0x12`, `0x31`, `0x7E` and `0x7F` are not sent for functional requests. All other responses are.
 
 ### Fault injection
 

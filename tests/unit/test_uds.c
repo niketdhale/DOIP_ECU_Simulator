@@ -544,6 +544,26 @@ void test_dtc_negative_responses(void)
     TEST_ASSERT_EQUAL_HEX8(UDS_NRC_INCORRECT_MESSAGE_LENGTH, s_resp[2]);
 }
 
+/* ── Functional addressing rule ───────────────────────────────────── */
+
+void test_functional_addressing_suppression_rule(void)
+{
+    const uint8_t silent[] = { 0x11, 0x12, 0x31, 0x7E, 0x7F };
+    for (size_t i = 0; i < sizeof(silent); i++) {
+        const uint8_t res[3] = { 0x7F, 0x22, silent[i] };
+        TEST_ASSERT_TRUE_MESSAGE(doip_uds_functional_suppresses(res, 3), "NRC must stay silent");
+    }
+    const uint8_t sent[] = { 0x13, 0x21, 0x22, 0x33, 0x35, 0x78 };
+    for (size_t i = 0; i < sizeof(sent); i++) {
+        const uint8_t res[3] = { 0x7F, 0x22, sent[i] };
+        TEST_ASSERT_FALSE_MESSAGE(doip_uds_functional_suppresses(res, 3), "NRC must be sent");
+    }
+    const uint8_t positive[3] = { 0x62, 0xF1, 0x11 };   /* positive response, not an NRC */
+    TEST_ASSERT_FALSE(doip_uds_functional_suppresses(positive, 3));
+    TEST_ASSERT_FALSE(doip_uds_functional_suppresses(positive, 0));
+    TEST_ASSERT_FALSE(doip_uds_functional_suppresses(NULL, 3));
+}
+
 /* ── ECU Reset details ────────────────────────────────────────────── */
 
 void test_ecu_reset_returns_to_default_session(void)
@@ -726,6 +746,7 @@ int main(void)
     RUN_TEST(test_dtc_count_and_list_by_status_mask);
     RUN_TEST(test_dtc_clear_single_and_all);
     RUN_TEST(test_dtc_negative_responses);
+    RUN_TEST(test_functional_addressing_suppression_rule);
     RUN_TEST(test_ecu_reset_returns_to_default_session);
     RUN_TEST(test_ecu_reset_invalid_requests);
     RUN_TEST(test_read_multiple_dids);
