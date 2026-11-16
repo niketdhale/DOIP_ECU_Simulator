@@ -29,6 +29,9 @@ jobs:
       - name: Alive-check timing tests (~22 s)
         if: matrix.flags == ''
         run: make test-alive SANITIZE="$SANITIZE"
+      - name: Two instances on two threads under ThreadSanitizer
+        if: matrix.flags == ''
+        run: make test-tsan
 
   features:
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository

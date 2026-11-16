@@ -62,23 +62,12 @@ typedef struct {
 
 #define DOIP_MAX_TCP_CLIENTS 5
 
-int doip_tcp_init(void);
-int doip_tcp_poll(DoIP_RxIndication rx_cb);
-void doip_tcp_tick(uint32_t now_ms);      /* Server-initiated Alive Check + timeout */
-uint8_t doip_tcp_get_client_count(void);  /* Count of currently active clients       */
-void doip_tcp_deinit(void);
-void doip_tcp_set_faults(const DoIP_FaultConfig_t *faults);  /* NULL = no faults */
-
-#if DOIP_ENABLE_TLS
-/**
- * @brief Configure TLS parameters before calling doip_tcp_init().
- *
- * Must be called before doip_tcp_init() when DOIP_ENABLE_TLS is true.
- * Copies the string pointers — the caller must keep them valid until
- * doip_tcp_deinit() is called.
- */
-void doip_tcp_tls_config(const char *cert_file, const char *key_file,
-                          const char *ca_file,   bool verify_peer);
-#endif
+/* All server state (listening socket, client slots, TLS context) lives in the
+ * instance; see core/doip_context.h. */
+int     doip_tcp_init(DoIP_Handle_t *h);
+int     doip_tcp_poll(DoIP_Handle_t *h);
+void    doip_tcp_tick(DoIP_Handle_t *h, uint32_t now_ms);     /* Alive Check, timeouts, delayed responses */
+uint8_t doip_tcp_get_client_count(const DoIP_Handle_t *h);    /* Currently connected clients              */
+void    doip_tcp_deinit(DoIP_Handle_t *h);
 
 #endif /* DOIP_TCP_H */

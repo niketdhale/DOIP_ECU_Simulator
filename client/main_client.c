@@ -5,11 +5,6 @@
 #include "config/doip_config.h"
 #include "config/doip_uds_config.h"
 
-/* Satisfy extern declarations from config/doip_config.h.
- * The client binary does not use server-side Rx/Tx callbacks. */
-DoIP_RxIndication   g_doip_rx_cb = NULL;
-DoIP_TxConfirmation g_doip_tx_cb = NULL;
-
 static void print_hex(const char *label, const uint8_t *buf, uint16_t len) {
     printf("  %-22s [%3u B]: ", label, len);
     for (uint16_t i = 0; i < len && i < 24; i++) printf("%02X ", buf[i]);

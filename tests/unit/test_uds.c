@@ -2,7 +2,7 @@
  * @file test_uds.c
  * @brief Unit tests for transport/doip_uds.c — UDS request processing.
  *
- * No sockets opened. Calls doip_uds_init() + doip_uds_process_request()
+ * No sockets opened. Calls uds_init() + doip_uds_process_request()
  * directly with in-memory buffers. FSM callbacks are provided by
  * tests/mocks/mock_fsm.c.
  *
@@ -12,6 +12,7 @@
  */
 #include "unity.h"
 #include "transport/doip_uds.h"
+#include "core/doip_context.h"
 #include "config/doip_uds_config.h"
 #include "core/doip_log.h"
 #include "mock_fsm.h"
@@ -26,6 +27,21 @@
 
 static DoIP_EcuIdentity_t s_test_identity;
 
+/* The simulator instance under test. Only its UDS-related parts are used:
+ * identity, request hook and DTC memory. */
+static struct DoIP_Context s_ecu;
+
+typedef int (*uds_hook_t)(uint8_t, const uint8_t*, uint16_t, uint8_t*, uint16_t, uint16_t*, void*);
+
+/** (Re)initialise the instance's UDS state; a NULL identity keeps the current one. */
+static void uds_init(const DoIP_EcuIdentity_t *identity, uds_hook_t hook, void *user_ctx)
+{
+    if (identity) s_ecu.identity = *identity;
+    s_ecu.config.on_uds_request = hook;
+    s_ecu.config.user_context   = user_ctx;
+    doip_uds_init(&s_ecu);
+}
+
 /* ── Shared request / response buffers ────────────────────────────── */
 static uint8_t  s_resp[DOIP_MAX_PAYLOAD_SIZE];
 static uint16_t s_rlen;
@@ -37,6 +53,7 @@ static UdsClientContext_t make_ctx(void)
 {
     UdsClientContext_t ctx;
     memset(&ctx, 0, sizeof(ctx));
+    ctx.ecu             = &s_ecu;
     ctx.current_session = UDS_SESSION_DEFAULT_STATE;
     /* Set last_activity to now so S3 timeout doesn't fire */
     struct timespec ts;
@@ -62,7 +79,7 @@ void setUp(void)
     strncpy(s_test_identity.software_version, TEST_SW,   sizeof(s_test_identity.software_version) - 1);
     strncpy(s_test_identity.system_name,      TEST_NAME,  sizeof(s_test_identity.system_name) - 1);
     strncpy(s_test_identity.serial_number,    TEST_SERIAL,sizeof(s_test_identity.serial_number) - 1);
-    doip_uds_init(&s_test_identity, NULL, NULL);
+    uds_init(&s_test_identity, NULL, NULL);
 }
 
 void tearDown(void)
@@ -74,7 +91,7 @@ void tearDown(void)
 
 void test_init_null_identity_uses_default(void)
 {
-    doip_uds_init(NULL, NULL, NULL);  /* re-init with no identity */
+    uds_init(NULL, NULL, NULL);  /* re-init with no identity */
 
     UdsClientContext_t ctx = make_ctx();
     uint8_t req[] = { UDS_SID_READ_DATA_BY_ID, 0xF1, 0x90 };
@@ -662,7 +679,7 @@ static int hook_passthrough(uint8_t sid,
 void test_runtime_hook_intercepts_request(void)
 {
     s_hook_called = 0;
-    doip_uds_init(&s_test_identity, hook_intercept, NULL);
+    uds_init(&s_test_identity, hook_intercept, NULL);
 
     UdsClientContext_t ctx = make_ctx();
     uint8_t req[] = { UDS_SID_READ_DATA_BY_ID, 0xF1, 0x90 };
@@ -679,7 +696,7 @@ void test_runtime_hook_intercepts_request(void)
 void test_runtime_hook_fallthrough(void)
 {
     s_hook_called = 0;
-    doip_uds_init(&s_test_identity, hook_passthrough, NULL);
+    uds_init(&s_test_identity, hook_passthrough, NULL);
 
     UdsClientContext_t ctx = make_ctx();
     uint8_t req[] = { UDS_SID_READ_DATA_BY_ID, 0xF1, 0x90 };

@@ -142,7 +142,8 @@ DoIP_Tick() [doip_api.c]
 ├── core/
 │   ├── doip_frame.c/.h          # DoIP frame serialization / deserialization
 │   ├── doip_log.c/.h            # Thread-safe logging (colors, timestamps, modules)
-│   └── doip_types.h             # Protocol structs & payload type constants
+│   ├── doip_types.h             # Protocol structs & payload type constants
+│   └── doip_context.h           # Internal: the per-instance state behind DoIP_Handle_t
 │
 ├── transport/
 │   ├── doip_udp.c/.h            # UDP: vehicle announcements, VIN/EID, IPv6 dual-stack
@@ -274,6 +275,9 @@ make test-server && ./test-server
 
 # Alive Check timing tests (~22 s — exercises idle timeout + disconnect)
 make test-alive && ./test-alive-bin
+
+# Two instances on two threads under ThreadSanitizer
+make test-tsan
 ```
 
 **Test suites:**
@@ -284,6 +288,7 @@ make test-alive && ./test-alive-bin
 | UDS unit tests | `make test` | 36 |
 | ISO-TP unit tests | `make test` | 14 |
 | Server integration tests (in-process server, port 23400) | `make test` | 25 |
+| Two instances in one process (ports 23410 / 23411); also `make test-tsan` | `make test` | 6 |
 | End-to-end tests of the binary (port 24400) | `make test` | 10 |
 | Alive-check timing tests | `make test-alive` | 3 |
 | ISO-TP server integration tests | `make test-features` | 5 |
@@ -368,7 +373,28 @@ void           DoIP_DeInit(DoIP_Handle_t *handle);
 void           DoIP_Destroy(DoIP_Handle_t *handle);
 void           DoIP_SetLogLevel(DoIP_Handle_t *handle, uint8_t level);
 void           DoIP_EnablePeriodicAnnounce(DoIP_Handle_t *handle, bool enable);
+int            DoIP_SetFaults(DoIP_Handle_t *handle, const DoIP_FaultConfig_t *faults);  // NULL clears
 ```
+
+### Several ECUs in one process
+
+A handle is a complete, independent simulator: its own sockets, testers, identity, sessions, security state, DTC memory and fault settings. Nothing is shared except the logger.
+
+```c
+DoIP_Handle_t *engine = DoIP_Create(), *gearbox = DoIP_Create();
+
+DoIP_Config_t cfg = {0};
+cfg.ecu_identity = &engine_identity;   cfg.logical_address = 0x1001;  cfg.port = 13400;
+DoIP_Init(engine, &cfg);
+cfg.ecu_identity = &gearbox_identity;  cfg.logical_address = 0x1002;  cfg.port = 13401;
+DoIP_Init(gearbox, &cfg);
+
+for (;;) { DoIP_Tick(engine); DoIP_Tick(gearbox); }   // or one thread per instance
+```
+
+- Every instance listens on all local addresses, so each needs its own port. A second instance on a port that is taken fails in `DoIP_Init()` and leaves nothing bound.
+- Calls on different handles may run on different threads at the same time; calls on one handle are serialised by a per-handle lock. Do not call the API of a handle from inside its own callbacks.
+- Logging is process-wide: the first initialised instance sets the level and the log file, later ones share them, and `DoIP_SetLogLevel()` affects all.
 
 ### `DoIP_Config_t` — Full Field Reference
 
@@ -406,6 +432,14 @@ typedef struct {
                                   // return 0 = handled; -1 = use built-in dispatch
 
     void *user_context;           // forwarded to all callbacks above
+
+    /* ── Addressing (0 = compiled-in default) ───────────────────── */
+    uint16_t logical_address;     // ECU address            (DOIP_ECU_LOGICAL_ADDRESS, 0x1003)
+    uint16_t functional_address;  // functional group       (DOIP_FUNCTIONAL_LOGICAL_ADDRESS, 0xE400)
+    uint16_t port;                // UDP + TCP port         (DOIP_TCP_PORT, 13400)
+
+    /* ── Fault injection (all-zero = none) ──────────────────────── */
+    DoIP_FaultConfig_t faults;    // see "Fault injection"; change later with DoIP_SetFaults()
 
 #if DOIP_ENABLE_TLS
     /* ── TLS configuration (DOIP_TLS=1 only) ───────────────────── */
@@ -581,7 +615,7 @@ config.tls.verify_peer = false;
 DoIP_Init(handle, &config);
 ```
 
-Internals: `doip_tcp_tls_config()` is called by `DoIP_Init()` before the FSM opens sockets. At accept time, `doip_tls_accept()` performs the TLS handshake and returns a `doip_io_t` whose vtable calls `SSL_read`/`SSL_write` — the rest of the stack sees no difference.
+Internals: the TCP server reads the certificate paths from the instance's configuration when `DoIP_Init()` opens its sockets. At accept time, `doip_tls_accept()` performs the TLS handshake and returns a `doip_io_t` whose vtable calls `SSL_read`/`SSL_write` — the rest of the stack sees no difference.
 
 Limits to know about:
 

@@ -231,6 +231,14 @@ test-isotp: $(UNITY_SRC) tests/unit/test_isotp.c \
 test-server: $(UNITY_SRC) tests/integration/test_server.c $(PROD_SRCS)
 	$(CC) $(INT_CFLAGS) -o $@ $^ $(TEST_LDFLAGS)
 
+# ----- Integration: two instances in one process (ports 23410 / 23411) ----
+test-multi: $(UNITY_SRC) tests/integration/test_multi_instance.c $(PROD_SRCS)
+	$(CC) $(INT_CFLAGS) -o $@ $^ $(TEST_LDFLAGS)
+
+# The same under ThreadSanitizer: each instance is ticked by its own thread
+test-multi-tsan: $(UNITY_SRC) tests/integration/test_multi_instance.c $(PROD_SRCS)
+	$(CC) $(filter-out $(SANITIZE),$(INT_CFLAGS)) -fsanitize=thread -o $@ $^ $(TEST_LDFLAGS)
+
 # ----- Integration: server-initiated Alive Check timing (~22 s) ------
 test-alive-bin: $(UNITY_SRC) tests/integration/test_alive_check.c $(PROD_SRCS)
 	$(CC) $(INT_CFLAGS) -o $@ $^ $(TEST_LDFLAGS)
@@ -271,11 +279,18 @@ test-unit: test-frame test-uds test-isotp
 	./test-isotp
 	@echo "=== Unit Tests Complete ==="
 
-test-integration: test-server
+test-integration: test-server test-multi
 	@echo ""
 	@echo "=== Integration Tests (port 23400) ==="
 	./test-server
+	./test-multi
 	@echo "=== Integration Tests Complete ==="
+
+test-tsan: test-multi-tsan
+	@echo ""
+	@echo "=== ThreadSanitizer: two instances on two threads ==="
+	./test-multi-tsan
+	@echo "=== ThreadSanitizer Tests Complete ==="
 
 test-alive: test-alive-bin
 	@echo ""
@@ -306,7 +321,7 @@ test-features: test-isotp-server test-tls test-server-ipv6
 # Fast CI target: unit + integration + end-to-end (< 30 s)
 test: test-unit test-integration test-e2e
 
-.PHONY: test-unit test-integration test-e2e test-features test-alive test-isotp test
+.PHONY: test-unit test-integration test-e2e test-features test-tsan test-alive test-isotp test
 
 # =====================================================================
 # Fuzzing  (tests/fuzz)
@@ -364,7 +379,7 @@ clean:
 	rm -f $(CLIENT_OBJS) $(CLIENT_TARGET)
 	rm -f $(LIB_OBJS) $(SHARED_LIB) $(STATIC_LIB) $(SONAME) libdoip.so
 	rm -f $(LIB_TEST_SERVER) $(LIB_TEST_CLIENT) $(LIB_TEST_EXAMPLE)
-	rm -f test-frame test-uds test-isotp test-server test-alive-bin test-sim
+	rm -f test-frame test-uds test-isotp test-server test-alive-bin test-sim test-multi test-multi-tsan
 	rm -f test-isotp-server test-tls test-server-ipv6
 	rm -f $(FUZZ_BINS) crash-fuzz-*.bin
 	rm -rf $(CERT_DIR)

@@ -10,6 +10,7 @@
  */
 #include "fuzz.h"
 #include "transport/doip_uds.h"
+#include "core/doip_context.h"
 #include "core/doip_log.h"
 #include <string.h>
 #include <time.h>
@@ -44,12 +45,15 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         .vin = "FUZZVIN0000000001", .software_version = "V0.0.1",
         .system_name = "Fuzz ECU", .serial_number = "SN-FUZZ",
     };
+    static struct DoIP_Context ecu;            /* only its UDS-related parts are used */
     DoIP_Log_Init(0, 0, NULL);                 /* silent */
-    doip_uds_init(&identity, NULL, NULL);      /* fresh identity and DTC memory per input */
+    ecu.identity = identity;                   /* fresh identity and DTC memory per input */
+    doip_uds_init(&ecu);
     if (size == 0) return 0;
 
     UdsClientContext_t ctx;
     memset(&ctx, 0, sizeof(ctx));
+    ctx.ecu = &ecu;
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     ctx.last_activity_ms  = (uint32_t)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000);

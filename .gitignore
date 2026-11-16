@@ -13,6 +13,8 @@ test-isotp
 test-server
 test-alive-bin
 test-sim
+test-multi
+test-multi-tsan
 test-isotp-server
 test-tls
 test-server-ipv6

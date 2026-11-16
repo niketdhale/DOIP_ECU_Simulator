@@ -1,16 +1,11 @@
 #include "transport/doip_uds.h"
+#include "core/doip_context.h"
 #include "core/doip_log.h"
 #include "state/doip_fsm.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
-
-/* Runtime ECU identity and optional UDS request hook */
-static DoIP_EcuIdentity_t g_identity;
-static int (*g_uds_request_cb)(uint8_t, const uint8_t*, uint16_t,
-                                uint8_t*, uint16_t, uint16_t*, void*) = NULL;
-static void *g_uds_user_ctx = NULL;
 
 static uint32_t get_time_ms(void) {
     struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -54,17 +49,17 @@ static int handle_session_control(UdsClientContext_t *ctx, const uint8_t *req, u
     res[2] = 0x00; res[3] = 0x32; res[4] = 0x01; res[5] = 0xF4;
     *res_len = 6;
     LOG_INFO(DOIP_LOG_MODULE_UDS, "Session changed to: 0x%02X", session_type);
-    DoIP_Fsm_OnUdsSessionChange(session_type);
+    DoIP_Fsm_OnUdsSessionChange(ctx->ecu, session_type);
     return 0;
 }
 
 /* Look up a readable DID; returns its data length or -1 if unsupported. */
-static int did_read(uint16_t did, const char **data) {
+static int did_read(const DoIP_EcuIdentity_t *id, uint16_t did, const char **data) {
     switch (did) {
-        case UDS_DID_VIN_NUMBER:        *data = g_identity.vin;              return DOIP_VIN_LENGTH;
-        case UDS_DID_SYSTEM_NAME:       *data = g_identity.system_name;      break;
-        case UDS_DID_SOFTWARE_VERSION:  *data = g_identity.software_version; break;
-        case UDS_DID_ECU_SERIAL_NUMBER: *data = g_identity.serial_number;    break;
+        case UDS_DID_VIN_NUMBER:        *data = id->vin;              return DOIP_VIN_LENGTH;
+        case UDS_DID_SYSTEM_NAME:       *data = id->system_name;      break;
+        case UDS_DID_SOFTWARE_VERSION:  *data = id->software_version; break;
+        case UDS_DID_ECU_SERIAL_NUMBER: *data = id->serial_number;    break;
         default: return -1;
     }
     return (int)strlen(*data);
@@ -73,7 +68,6 @@ static int did_read(uint16_t did, const char **data) {
 /* 0x22: one or more DIDs per request. Unsupported DIDs are skipped; the
  * request is rejected only if none of them is supported (ISO 14229-1). */
 static int handle_read_data_by_id(UdsClientContext_t *ctx, const uint8_t *req, uint16_t req_len, uint8_t *res, uint16_t *res_len) {
-    (void)ctx;
     if (req_len < 3 || (req_len - 1) % 2 != 0)
         return neg(res, res_len, UDS_SID_READ_DATA_BY_ID, UDS_NRC_INCORRECT_MESSAGE_LENGTH);
 
@@ -82,7 +76,7 @@ static int handle_read_data_by_id(UdsClientContext_t *ctx, const uint8_t *req, u
     for (uint16_t i = 1; i < req_len; i += 2) {
         uint16_t did = (uint16_t)((req[i] << 8) | req[i + 1]);
         const char *data = NULL;
-        int n = did_read(did, &data);
+        int n = did_read(&ctx->ecu->identity, did, &data);
         LOG_DEBUG(DOIP_LOG_MODULE_UDS, "Read DID: 0x%04X%s", did, n < 0 ? " (unsupported)" : "");
         if (n < 0) continue;
         if (out + 2U + (unsigned)n > UDS_MAX_RESPONSE_LEN)
@@ -97,10 +91,10 @@ static int handle_read_data_by_id(UdsClientContext_t *ctx, const uint8_t *req, u
     return 0;
 }
 
-/* DIDs writable through 0x2E, backed by the runtime identity (which UDP
+/* DIDs writable through 0x2E, backed by the instance's identity (which UDP
  * vehicle announcements also read, so a written VIN is announced too). */
 static int handle_write_data_by_id(UdsClientContext_t *ctx, const uint8_t *req, uint16_t req_len, uint8_t *res, uint16_t *res_len) {
-    (void)ctx;
+    DoIP_EcuIdentity_t *id = &ctx->ecu->identity;
     uint8_t nrc = 0;
     char   *dst = NULL;
     size_t  max = 0;                       /* max data bytes; for VIN also the exact length */
@@ -108,9 +102,9 @@ static int handle_write_data_by_id(UdsClientContext_t *ctx, const uint8_t *req, 
     size_t   n   = (req_len >= 3) ? (size_t)(req_len - 3) : 0;
 
     switch (did) {
-        case UDS_DID_VIN_NUMBER:        dst = g_identity.vin;           max = DOIP_VIN_LENGTH; break;
-        case UDS_DID_SYSTEM_NAME:       dst = g_identity.system_name;   max = sizeof(g_identity.system_name) - 1; break;
-        case UDS_DID_ECU_SERIAL_NUMBER: dst = g_identity.serial_number; max = sizeof(g_identity.serial_number) - 1; break;
+        case UDS_DID_VIN_NUMBER:        dst = id->vin;           max = DOIP_VIN_LENGTH; break;
+        case UDS_DID_SYSTEM_NAME:       dst = id->system_name;   max = sizeof(id->system_name) - 1; break;
+        case UDS_DID_ECU_SERIAL_NUMBER: dst = id->serial_number; max = sizeof(id->serial_number) - 1; break;
         default: break;
     }
 
@@ -129,14 +123,11 @@ static int handle_write_data_by_id(UdsClientContext_t *ctx, const uint8_t *req, 
 }
 
 #if UDS_SUPPORT_DTC
-typedef struct { uint32_t dtc; uint8_t status; } uds_dtc_t;
-static const uds_dtc_t g_dtc_defaults[] = { UDS_DTC_TABLE };
-static uds_dtc_t       g_dtcs[sizeof(g_dtc_defaults) / sizeof(g_dtc_defaults[0])];
-#define DTC_COUNT (sizeof(g_dtcs) / sizeof(g_dtcs[0]))
+static const uds_dtc_t g_dtc_defaults[UDS_DTC_COUNT] = { UDS_DTC_TABLE };   /* power-on DTC memory */
 
 /* 0x19: 01 = count by status mask, 02 = list by status mask, 0A = all supported */
 static int handle_read_dtc_info(UdsClientContext_t *ctx, const uint8_t *req, uint16_t req_len, uint8_t *res, uint16_t *res_len) {
-    (void)ctx;
+    const uds_dtc_t *dtcs = ctx->ecu->dtcs;
     const uint8_t sid = UDS_SID_READ_DTC_INFO;
     if (req_len < 2) return neg(res, res_len, sid, UDS_NRC_INCORRECT_MESSAGE_LENGTH);
     uint8_t sub = req[1] & 0x7F;
@@ -148,15 +139,15 @@ static int handle_read_dtc_info(UdsClientContext_t *ctx, const uint8_t *req, uin
     uint8_t  mask  = (sub == 0x0A) ? 0xFF : req[2];
     uint16_t out   = 3, count = 0;
     res[0] = UDS_SID_READ_DTC_INFO_RES; res[1] = sub; res[2] = UDS_DTC_STATUS_AVAILABILITY_MASK;
-    for (size_t i = 0; i < DTC_COUNT; i++) {
-        if (sub != 0x0A && (g_dtcs[i].status & mask) == 0) continue;
+    for (size_t i = 0; i < UDS_DTC_COUNT; i++) {
+        if (sub != 0x0A && (dtcs[i].status & mask) == 0) continue;
         count++;
         if (sub == 0x01) continue;
         if (out + 4U > UDS_MAX_RESPONSE_LEN) return neg(res, res_len, sid, UDS_NRC_RESPONSE_TOO_LONG);
-        res[out++] = (uint8_t)(g_dtcs[i].dtc >> 16);
-        res[out++] = (uint8_t)(g_dtcs[i].dtc >> 8);
-        res[out++] = (uint8_t)g_dtcs[i].dtc;
-        res[out++] = g_dtcs[i].status;
+        res[out++] = (uint8_t)(dtcs[i].dtc >> 16);
+        res[out++] = (uint8_t)(dtcs[i].dtc >> 8);
+        res[out++] = (uint8_t)dtcs[i].dtc;
+        res[out++] = dtcs[i].status;
     }
     if (sub == 0x01) {
         res[out++] = 0x01;                    /* DTC format: ISO 14229-1 */
@@ -169,13 +160,13 @@ static int handle_read_dtc_info(UdsClientContext_t *ctx, const uint8_t *req, uin
 
 /* 0x14: FFFFFF clears every DTC, otherwise the one matching DTC */
 static int handle_clear_dtc(UdsClientContext_t *ctx, const uint8_t *req, uint16_t req_len, uint8_t *res, uint16_t *res_len) {
-    (void)ctx;
+    uds_dtc_t *dtcs = ctx->ecu->dtcs;
     if (req_len != 4) return neg(res, res_len, UDS_SID_CLEAR_DTC, UDS_NRC_INCORRECT_MESSAGE_LENGTH);
     uint32_t group = ((uint32_t)req[1] << 16) | ((uint32_t)req[2] << 8) | req[3];
     bool found = false;
-    for (size_t i = 0; i < DTC_COUNT; i++) {
-        if (group != 0xFFFFFF && group != g_dtcs[i].dtc) continue;
-        g_dtcs[i].status = 0x00;
+    for (size_t i = 0; i < UDS_DTC_COUNT; i++) {
+        if (group != 0xFFFFFF && group != dtcs[i].dtc) continue;
+        dtcs[i].status = 0x00;
         found = true;
     }
     if (!found && group != 0xFFFFFF)
@@ -210,7 +201,7 @@ static int handle_security_access(UdsClientContext_t *ctx, const uint8_t *req, u
     res[0] = UDS_SID_SECURITY_ACCESS_RES; res[1] = sub;
     if (sub == 0x01) {                       /* requestSeed */
         /* An already-unlocked ECU reports an all-zero seed */
-        ctx->security_seed = ctx->security_unlocked ? 0 : ((uint32_t)rand() | 1U);
+        ctx->security_seed = ctx->security_unlocked ? 0 : ((uint32_t)rand_r(&ctx->ecu->rng) | 1U);
         put_be32(&res[2], ctx->security_seed);
         *res_len = 6;
         return 0;
@@ -245,7 +236,7 @@ static int handle_tester_present(UdsClientContext_t *ctx, const uint8_t *req, ui
     }
     res[0] = UDS_SID_TESTER_PRESENT_RES; res[1] = req[1]; *res_len = 2;
     doip_uds_update_activity(ctx);
-    DoIP_Fsm_OnDiagnosticActivity();
+    DoIP_Fsm_OnDiagnosticActivity(ctx->ecu);
     return 0;
 }
 
@@ -258,7 +249,7 @@ static int handle_ecu_reset(UdsClientContext_t *ctx, const uint8_t *req, uint16_
 
     /* Simulated reset: the ECU comes back in the default session, locked */
     enter_default_session(ctx);
-    DoIP_Fsm_OnUdsSessionChange(UDS_SESSION_DEFAULT);
+    DoIP_Fsm_OnUdsSessionChange(ctx->ecu, UDS_SESSION_DEFAULT);
     res[0] = UDS_SID_ECU_RESET_RES; res[1] = type; *res_len = 2;
     LOG_WARN(DOIP_LOG_MODULE_UDS, "ECU Reset type 0x%02X requested (simulated)", type);
     return 0;
@@ -334,33 +325,27 @@ static bool sid_needs_security(uint8_t sid) {
 #endif
 }
 
-int doip_uds_init(const DoIP_EcuIdentity_t *identity,
-                  int (*uds_request_cb)(uint8_t, const uint8_t*, uint16_t,
-                                        uint8_t*, uint16_t, uint16_t*, void*),
-                  void *user_ctx) {
-    if (identity) g_identity = *identity;
-    g_uds_request_cb = uds_request_cb;
-    g_uds_user_ctx   = user_ctx;
-    srand((unsigned)time(NULL));
+int doip_uds_init(DoIP_Handle_t *ecu) {
+    ecu->rng = (unsigned)time(NULL) ^ (unsigned)(uintptr_t)ecu;   /* differs per instance */
 #if UDS_SUPPORT_DTC
-    memcpy(g_dtcs, g_dtc_defaults, sizeof(g_dtcs));
+    memcpy(ecu->dtcs, g_dtc_defaults, sizeof(ecu->dtcs));
 #endif
     LOG_INFO(DOIP_LOG_MODULE_UDS, "UDS module initialized (per-client state)");
     return 0;
 }
 
 int doip_uds_process_request(UdsClientContext_t *ctx, const uint8_t *req_data, uint16_t req_len, uint8_t *res_data, uint16_t *res_len) {
-    if (!ctx || !req_data || !res_data || !res_len || req_len == 0) return -1;
+    if (!ctx || !ctx->ecu || !req_data || !res_data || !res_len || req_len == 0) return -1;
 
     uint8_t sid = req_data[0];
     LOG_DEBUG(DOIP_LOG_MODULE_UDS, "<<< SID: 0x%02X (Len=%u)", sid, req_len);
 
     /* 1. Runtime hook — caller can serve NVM / sensor / DTC data directly */
-    if (g_uds_request_cb) {
+    if (ctx->ecu->config.on_uds_request) {
         uint16_t cb_len = 0;
-        if (g_uds_request_cb(sid, req_data, req_len,
-                             res_data, DOIP_MAX_PAYLOAD_SIZE, &cb_len,
-                             g_uds_user_ctx) == 0) {
+        if (ctx->ecu->config.on_uds_request(sid, req_data, req_len,
+                                            res_data, DOIP_MAX_PAYLOAD_SIZE, &cb_len,
+                                            ctx->ecu->config.user_context) == 0) {
             *res_len = cb_len;
             LOG_DEBUG(DOIP_LOG_MODULE_UDS, ">>> SID: 0x%02X handled by runtime hook", sid);
             return 0;
@@ -441,7 +426,5 @@ bool doip_uds_functional_suppresses(const uint8_t *res, uint16_t res_len) {
         default: return false;
     }
 }
-
-const DoIP_EcuIdentity_t *doip_uds_identity(void) { return &g_identity; }
 
 void doip_uds_deinit(void) { LOG_INFO(DOIP_LOG_MODULE_UDS, "UDS module deinitialized"); }

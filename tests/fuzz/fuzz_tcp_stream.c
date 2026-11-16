@@ -17,15 +17,6 @@
 #include "../../transport/doip_tcp.c"
 #include "fuzz.h"
 
-/* Globals normally owned by doip_api.c */
-DoIP_ClientConnectCb     g_doip_client_connect_cb    = NULL;
-DoIP_ClientDisconnectCb  g_doip_client_disconnect_cb = NULL;
-DoIP_FrameReceivedCb     g_doip_frame_received_cb    = NULL;
-void                    *g_doip_async_user_ctx       = NULL;
-uint16_t                 g_doip_ecu_logical_addr     = DOIP_ECU_LOGICAL_ADDRESS;
-uint16_t                 g_doip_functional_addr      = DOIP_FUNCTIONAL_LOGICAL_ADDRESS;
-uint16_t                 g_doip_port                 = DOIP_TCP_PORT;
-
 #define HDR(pt, len)  DOIP_PROTOCOL_VERSION, DOIP_INVERSE_VERSION, (pt) >> 8, (pt) & 0xFF, 0, 0, 0, (len)
 #define ACTIVATE      HDR(0x0005, 7), 0x0E,0x00, 0x00, 0,0,0,0
 #define DIAG(n)       HDR(0x8001, 4 + (n)), 0x0E,0x00, 0x10,0x03
@@ -65,20 +56,27 @@ static void    fake_close(void *ctx) { (void)ctx; }
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 {
-    static doip_client_t client;               /* ~8 KiB: keep it off the stack */
+    static struct DoIP_Context inst;           /* one simulator instance, no sockets */
     DoIP_Log_Init(0, 0, NULL);
-    doip_uds_init(NULL, NULL, NULL);
     if (size == 0) return 0;
-    const DoIP_FaultConfig_t faults = { .response_delay_ms = (data[0] & 0x01) ? 60000U : 0U };
-    doip_tcp_set_faults(&faults);
 
-    memset(&client, 0, sizeof(client));
-    client.in_use = true;
-    client.fd     = -1;
-    client.state  = DOIP_TCP_STATE_CONNECTED;
-    client.io     = (doip_io_t){ fake_read, fake_write, fake_getfd, fake_close, NULL };
-    client.uds_ctx.current_session  = UDS_ECU_DEFAULT_SESSION;
-    client.uds_ctx.last_activity_ms = get_time_ms();
+    memset(&inst, 0, sizeof(inst));
+    inst.tcp_fd = inst.udp_fd = -1;
+    inst.config.logical_address    = DOIP_ECU_LOGICAL_ADDRESS;
+    inst.config.functional_address = DOIP_FUNCTIONAL_LOGICAL_ADDRESS;
+    inst.config.port               = DOIP_TCP_PORT;
+    inst.config.faults.response_delay_ms = (data[0] & 0x01) ? 60000U : 0U;
+    memcpy(inst.identity.vin, "FUZZVIN0000000001", DOIP_VIN_LENGTH);
+    doip_uds_init(&inst);
+
+    doip_client_t *client = &inst.clients[0];
+    client->in_use = true;
+    client->fd     = -1;
+    client->state  = DOIP_TCP_STATE_CONNECTED;
+    client->io     = (doip_io_t){ fake_read, fake_write, fake_getfd, fake_close, NULL };
+    client->uds_ctx.ecu              = &inst;
+    client->uds_ctx.current_session  = UDS_ECU_DEFAULT_SESSION;
+    client->uds_ctx.last_activity_ms = get_time_ms();
 
     for (size_t pos = 1; pos < size; ) {
         size_t len = data[pos++];
@@ -87,8 +85,8 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         s_chunk_len = len;
         pos += len;
         while (s_chunk_len > 0) {              /* one call per readable event */
-            if (process_client_frame(&client) < 0) return 0;   /* server would close here */
-            FUZZ_ASSERT(client.rx_bytes <= sizeof(client.rx_buf));
+            if (process_client_frame(&inst, client) < 0) return 0;   /* server would close here */
+            FUZZ_ASSERT(client->rx_bytes <= sizeof(client->rx_buf));
         }
     }
     return 0;

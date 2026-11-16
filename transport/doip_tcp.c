@@ -12,6 +12,7 @@
  */
 
 #include "transport/doip_tcp.h"
+#include "core/doip_context.h"
 #include "transport/doip_io.h"
 #include "core/doip_frame.h"
 #include "core/doip_log.h"
@@ -29,33 +30,9 @@
 #include <stdlib.h>
 #include <fcntl.h>
 
-#if DOIP_ENABLE_TLS
-#include "transport/doip_tls.h"
-static doip_tls_server_t g_tls_server;
-
-/* TLS config — set via doip_tcp_tls_config() before doip_tcp_init() */
-static const char *g_tls_cert   = NULL;
-static const char *g_tls_key    = NULL;
-static const char *g_tls_ca     = NULL;
-static bool        g_tls_verify = false;
-
-void doip_tcp_tls_config(const char *cert_file, const char *key_file,
-                          const char *ca_file,   bool verify_peer)
-{
-    g_tls_cert   = cert_file;
-    g_tls_key    = key_file;
-    g_tls_ca     = ca_file;
-    g_tls_verify = verify_peer;
-}
-#endif
-
 #ifndef DOIP_TLS_HANDSHAKE_TIMEOUT_S
 #define DOIP_TLS_HANDSHAKE_TIMEOUT_S 2
 #endif
-
-static int g_tcp_srv_fd = -1;
-static DoIP_FaultConfig_t g_faults;   /* all-zero = well-behaved ECU */
-static doip_client_t g_clients[DOIP_MAX_TCP_CLIENTS] = {0};
 
 /* ---------------------------------------------------------------------------
  * Helpers
@@ -100,12 +77,12 @@ static void put_be16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)(v >> 8); p[1] = 
 static uint16_t get_be16(const uint8_t *p) { return (uint16_t)((p[0] << 8) | p[1]); }
 
 /** Send a Diagnostic Message (ECU -> tester) carrying @p data. */
-static void client_send_diag(doip_client_t *c, uint16_t tester_addr,
+static void client_send_diag(DoIP_Handle_t *h, doip_client_t *c, uint16_t tester_addr,
                               const uint8_t *data, uint16_t len)
 {
     uint8_t buf[4 + DOIP_MAX_PAYLOAD_SIZE];
     if ((uint32_t)len + 4U > DOIP_MAX_PAYLOAD_SIZE) return;
-    put_be16(&buf[0], g_doip_ecu_logical_addr);
+    put_be16(&buf[0], h->config.logical_address);
     put_be16(&buf[2], tester_addr);
     memcpy(&buf[4], data, len);
     client_send_frame(c, DOIP_PT_DIAGNOSTIC_MSG, buf, 4U + len);
@@ -115,7 +92,7 @@ static void client_send_diag(doip_client_t *c, uint16_t tester_addr,
  * Send a UDS response (ECU -> tester). With ISO-TP enabled it is segmented
  * into 8-byte N-PDUs (SF, or FF + CFs), one DoIP diagnostic message each.
  */
-static void client_send_uds(doip_client_t *c, uint16_t tester_addr,
+static void client_send_uds(DoIP_Handle_t *h, doip_client_t *c, uint16_t tester_addr,
                              const uint8_t *data, uint16_t len)
 {
 #if DOIP_ENABLE_ISO_TP
@@ -125,18 +102,18 @@ static void client_send_uds(doip_client_t *c, uint16_t tester_addr,
     enum { MAX_SEGS = 1 + DOIP_ISOTP_MAX_PDU / 7 };
     uint8_t segs[MAX_SEGS][8];
     int n = doip_isotp_tx(&c->isotp_ctx, data, len, segs, MAX_SEGS);
-    for (int i = 0; i < n; i++) client_send_diag(c, tester_addr, segs[i], 8);
+    for (int i = 0; i < n; i++) client_send_diag(h, c, tester_addr, segs[i], 8);
 #else
-    client_send_diag(c, tester_addr, data, len);
+    client_send_diag(h, c, tester_addr, data, len);
 #endif
 }
 
-static doip_client_t *find_free_client(void) {
+static doip_client_t *find_free_client(DoIP_Handle_t *h) {
     for (int i = 0; i < DOIP_MAX_TCP_CLIENTS; i++) {
-        if (!g_clients[i].in_use) {
-            memset(&g_clients[i], 0, sizeof(doip_client_t));
-            g_clients[i].in_use = true;
-            return &g_clients[i];
+        if (!h->clients[i].in_use) {
+            memset(&h->clients[i], 0, sizeof(doip_client_t));
+            h->clients[i].in_use = true;
+            return &h->clients[i];
         }
     }
     return NULL;
@@ -147,7 +124,7 @@ static doip_client_t *find_free_client(void) {
  * socket temporarily in blocking mode (bounded by SO_RCVTIMEO/SO_SNDTIMEO),
  * then non-blocking is restored.  Returns false if the client must be dropped.
  */
-static bool client_setup_io(doip_client_t *client, int fd)
+static bool client_setup_io(DoIP_Handle_t *h, doip_client_t *client, int fd)
 {
 #if DOIP_ENABLE_TLS
     int fl = fcntl(fd, F_GETFL, 0);
@@ -155,7 +132,7 @@ static bool client_setup_io(doip_client_t *client, int fd)
     fcntl(fd, F_SETFL, fl & ~O_NONBLOCK);
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tmo, sizeof(tmo));
     setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tmo, sizeof(tmo));
-    client->io = doip_tls_accept(&g_tls_server, fd);
+    client->io = doip_tls_accept(&h->tls, fd);
     tmo.tv_sec = 0;
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tmo, sizeof(tmo));
     setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tmo, sizeof(tmo));
@@ -165,20 +142,21 @@ static bool client_setup_io(doip_client_t *client, int fd)
         return false;
     }
 #else
+    (void)h;
     client->io = doip_io_plain(fd);
 #endif
     return true;
 }
 
-static void close_client(doip_client_t *client) {
+static void close_client(DoIP_Handle_t *h, doip_client_t *client) {
     if (!client || !client->in_use) return;
     int fd = client->fd;
     LOG_INFO(DOIP_LOG_MODULE_TCP, "Client disconnected (fd=%d, ip=%s)",
              fd, client->peer_ip[0] ? client->peer_ip : "?");
 
     /* Notify application before releasing the fd */
-    if (g_doip_client_disconnect_cb)
-        g_doip_client_disconnect_cb(fd, g_doip_async_user_ctx);
+    if (h->config.on_client_disconnect)
+        h->config.on_client_disconnect(fd, h->config.user_context);
 
     client->io.close(client->io.ctx);
     memset(client, 0, sizeof(doip_client_t));
@@ -192,7 +170,7 @@ static void close_client(doip_client_t *client) {
  * Process every complete frame currently in client->rx_buf.  Returns 0 when
  * waiting for more data, -1 on error or when the caller should close the client.
  */
-static int process_buffered_frames(doip_client_t *client)
+static int process_buffered_frames(DoIP_Handle_t *h, doip_client_t *client)
 {
     /* --- Step 2: Wait until we have at least a complete header --- */
 next_frame:
@@ -223,10 +201,10 @@ next_frame:
     uint8_t *pl = client->rx_buf + DOIP_HEADER_SIZE;
 
     /* --- Step 5: Optional application frame intercept hook --- */
-    if (g_doip_frame_received_cb) {
-        int rc = g_doip_frame_received_cb(client->fd, hdr.payload_type,
-                                           pl, hdr.payload_length,
-                                           g_doip_async_user_ctx);
+    if (h->config.on_frame_received) {
+        int rc = h->config.on_frame_received(client->fd, hdr.payload_type,
+                                             pl, hdr.payload_length,
+                                             h->config.user_context);
         if (rc == 0) goto frame_done; /* Application handled it — consume the frame */
     }
 
@@ -253,7 +231,7 @@ next_frame:
 
             doip_routing_act_res_t res; memset(&res, 0, sizeof(res));
             res.tester_logical_address = req->tester_logical_address;
-            res.ecu_logical_address    = htons(g_doip_ecu_logical_addr);
+            res.ecu_logical_address    = htons(h->config.logical_address);
             res.activation_code = resp_code;
             if (client_send_frame(client, DOIP_PT_ROUTING_ACT_RES,
                                    &res, sizeof(res)) < 0 ||
@@ -278,15 +256,15 @@ next_frame:
 
             uint16_t target_addr = get_be16(pl + 2);
             uint8_t  nack_code   = 0;
-            bool     functional  = (target_addr == g_doip_functional_addr);
+            bool     functional  = (target_addr == h->config.functional_address);
 
             if (client->state != DOIP_TCP_STATE_ACTIVATED ||
                 tester_addr != client->tester_logical_addr)
                 nack_code = DOIP_DIAG_NACK_INVALID_SA;
-            else if (target_addr != g_doip_ecu_logical_addr && !functional)
+            else if (target_addr != h->config.logical_address && !functional)
                 nack_code = DOIP_DIAG_NACK_UNKNOWN_TA;
 
-            if (g_faults.force_diag_nack) nack_code = g_faults.force_diag_nack;
+            if (h->config.faults.force_diag_nack) nack_code = h->config.faults.force_diag_nack;
 
             if (nack_code) {
                 uint8_t nack[5];
@@ -307,7 +285,7 @@ next_frame:
             put_be16(&ack_payload[0], target_addr);
             put_be16(&ack_payload[2], tester_addr);
             ack_payload[4] = 0x00;
-            if (!g_faults.drop_diag_ack)
+            if (!h->config.faults.drop_diag_ack)
                 client_send_frame(client, DOIP_PT_DIAGNOSTIC_ACK,
                                    ack_payload, sizeof(ack_payload));
 
@@ -328,7 +306,7 @@ next_frame:
                                       isotp_buf, sizeof(isotp_buf),
                                       fc_buf, &fc_len);
             if (fc_len > 0)
-                client_send_diag(client, tester_addr, fc_buf, fc_len);
+                client_send_diag(h, client, tester_addr, fc_buf, fc_len);
             if (rlen == 0)  break;  /* Waiting for more consecutive frames  */
             if (rlen <  0) { client->rx_bytes = 0; return -1; } /* ISO-TP error */
             uds_req     = isotp_buf;
@@ -357,21 +335,21 @@ next_frame:
             if (functional && doip_uds_functional_suppresses(uds_response, uds_res_len))
                 uds_res_len = 0;
 
-            if (uds_res_len == 0 || g_faults.drop_response) break;
+            if (uds_res_len == 0 || h->config.faults.drop_response) break;
 
-            if (busy || g_faults.response_delay_ms == 0) {
-                client_send_uds(client, tester_addr, uds_response, uds_res_len);
+            if (busy || h->config.faults.response_delay_ms == 0) {
+                client_send_uds(h, client, tester_addr, uds_response, uds_res_len);
                 break;
             }
             /* Hold the response back; doip_tcp_tick() releases it */
             uint32_t now = get_time_ms();
             memcpy(client->pending_res, uds_response, uds_res_len);
             client->pending_len       = uds_res_len;
-            client->pending_due_ms    = now + g_faults.response_delay_ms;
+            client->pending_due_ms    = now + h->config.faults.response_delay_ms;
             client->pending_next78_ms = client->pending_due_ms;   /* i.e. never */
-            if (g_faults.response_delay_ms > UDS_P2_SERVER_MS) {
+            if (h->config.faults.response_delay_ms > UDS_P2_SERVER_MS) {
                 const uint8_t pending[3] = { 0x7F, uds_req[0], UDS_NRC_RESPONSE_PENDING };
-                client_send_uds(client, tester_addr, pending, sizeof(pending));
+                client_send_uds(h, client, tester_addr, pending, sizeof(pending));
                 client->pending_next78_ms = now + UDS_P2_STAR_SERVER_MS / 2;
             }
             break;
@@ -418,7 +396,7 @@ frame_done:
  * frames.  Returns 0 when waiting for more data, -1 on error or when the
  * caller should close the client.
  */
-static int process_client_frame(doip_client_t *client)
+static int process_client_frame(DoIP_Handle_t *h, doip_client_t *client)
 {
     for (;;) {
         /* --- Step 1: Read whatever is available into the tail of rx_buf --- */
@@ -443,7 +421,7 @@ static int process_client_frame(doip_client_t *client)
         }
         client->rx_bytes += (size_t)n;
 
-        int rc = process_buffered_frames(client);
+        int rc = process_buffered_frames(h, client);
         /* A read that filled all the free space may have left more behind in
          * the I/O layer (the rest of a TLS record, which select() cannot see),
          * so read again instead of waiting for the next readable event. */
@@ -455,87 +433,86 @@ static int process_client_frame(doip_client_t *client)
  * Public API
  * -------------------------------------------------------------------------*/
 
-int doip_tcp_init(void) {
+int doip_tcp_init(DoIP_Handle_t *h) {
 #if DOIP_ENABLE_IPV6
-    g_tcp_srv_fd = socket(AF_INET6, SOCK_STREAM, 0);
+    h->tcp_fd = socket(AF_INET6, SOCK_STREAM, 0);
 #else
-    g_tcp_srv_fd = socket(AF_INET, SOCK_STREAM, 0);
+    h->tcp_fd = socket(AF_INET, SOCK_STREAM, 0);
 #endif
-    if (g_tcp_srv_fd < 0) {
+    if (h->tcp_fd < 0) {
         LOG_ERROR(DOIP_LOG_MODULE_TCP, "socket failed: %s", strerror(errno));
         return -1;
     }
 
     int opt = 1;
-    setsockopt(g_tcp_srv_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-    setsockopt(g_tcp_srv_fd, IPPROTO_TCP, TCP_NODELAY,  &opt, sizeof(opt));
-    fcntl(g_tcp_srv_fd, F_SETFL,
-          fcntl(g_tcp_srv_fd, F_GETFL, 0) | O_NONBLOCK);
+    setsockopt(h->tcp_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    setsockopt(h->tcp_fd, IPPROTO_TCP, TCP_NODELAY,  &opt, sizeof(opt));
+    fcntl(h->tcp_fd, F_SETFL,
+          fcntl(h->tcp_fd, F_GETFL, 0) | O_NONBLOCK);
 
 #if DOIP_ENABLE_IPV6
     /* Dual-stack: accept both IPv4-mapped and native IPv6 */
     int v6only = 0;
-    setsockopt(g_tcp_srv_fd, IPPROTO_IPV6, IPV6_V6ONLY, &v6only, sizeof(v6only));
+    setsockopt(h->tcp_fd, IPPROTO_IPV6, IPV6_V6ONLY, &v6only, sizeof(v6only));
     struct sockaddr_in6 addr6;
     memset(&addr6, 0, sizeof(addr6));
     addr6.sin6_family = AF_INET6;
     addr6.sin6_addr   = in6addr_any;
-    addr6.sin6_port   = htons(g_doip_port);
-    if (bind(g_tcp_srv_fd, (struct sockaddr *)&addr6, sizeof(addr6)) < 0) {
+    addr6.sin6_port   = htons(h->config.port);
+    if (bind(h->tcp_fd, (struct sockaddr *)&addr6, sizeof(addr6)) < 0) {
         LOG_ERROR(DOIP_LOG_MODULE_TCP, "bind (IPv6) failed: %s", strerror(errno));
-        close(g_tcp_srv_fd); g_tcp_srv_fd = -1; return -2;
+        close(h->tcp_fd); h->tcp_fd = -1; return -2;
     }
 #else
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family      = AF_INET;
     addr.sin_addr.s_addr = INADDR_ANY;
-    addr.sin_port        = htons(g_doip_port);
-    if (bind(g_tcp_srv_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+    addr.sin_port        = htons(h->config.port);
+    if (bind(h->tcp_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         LOG_ERROR(DOIP_LOG_MODULE_TCP, "bind failed: %s", strerror(errno));
-        close(g_tcp_srv_fd); g_tcp_srv_fd = -1; return -2;
+        close(h->tcp_fd); h->tcp_fd = -1; return -2;
     }
 #endif
 
-    if (listen(g_tcp_srv_fd, DOIP_MAX_TCP_CLIENTS) < 0) {
+    if (listen(h->tcp_fd, DOIP_MAX_TCP_CLIENTS) < 0) {
         LOG_ERROR(DOIP_LOG_MODULE_TCP, "listen failed: %s", strerror(errno));
-        close(g_tcp_srv_fd); g_tcp_srv_fd = -1; return -3;
+        close(h->tcp_fd); h->tcp_fd = -1; return -3;
     }
 
 #if DOIP_ENABLE_TLS
-    if (!g_tls_cert || !g_tls_key) {
+    if (!h->config.tls.cert_file || !h->config.tls.key_file) {
         LOG_ERROR(DOIP_LOG_MODULE_TCP,
-                  "TLS enabled but cert/key not set — call doip_tcp_tls_config() first");
-        close(g_tcp_srv_fd); g_tcp_srv_fd = -1; return -4;
+                  "TLS enabled but DoIP_Config_t::tls cert_file / key_file not set");
+        close(h->tcp_fd); h->tcp_fd = -1; return -4;
     }
-    if (doip_tls_init(&g_tls_server, g_tls_cert, g_tls_key,
-                       g_tls_ca, g_tls_verify) != 0) {
+    if (doip_tls_init(&h->tls, h->config.tls.cert_file, h->config.tls.key_file,
+                       h->config.tls.ca_file, h->config.tls.verify_peer) != 0) {
         LOG_ERROR(DOIP_LOG_MODULE_TCP, "TLS context initialisation failed");
-        close(g_tcp_srv_fd); g_tcp_srv_fd = -1; return -5;
+        close(h->tcp_fd); h->tcp_fd = -1; return -5;
     }
 #endif
 
     LOG_INFO(DOIP_LOG_MODULE_TCP,
              "TCP server listening on port %d (max %d clients, IPv6=%s, TLS=%s)",
-             g_doip_port, DOIP_MAX_TCP_CLIENTS,
+             h->config.port, DOIP_MAX_TCP_CLIENTS,
              DOIP_ENABLE_IPV6 ? "yes" : "no",
              DOIP_ENABLE_TLS  ? "yes" : "no");
     return 0;
 }
 
-int doip_tcp_poll(DoIP_RxIndication rx_cb) {
-    (void)rx_cb;
-    if (g_tcp_srv_fd < 0) return -1;
+int doip_tcp_poll(DoIP_Handle_t *h) {
+    if (h->tcp_fd < 0) return -1;
 
     fd_set readfds;
     struct timeval tv = { .tv_sec = 0, .tv_usec = 10000 };
     FD_ZERO(&readfds);
-    FD_SET(g_tcp_srv_fd, &readfds);
-    int max_fd = g_tcp_srv_fd;
+    FD_SET(h->tcp_fd, &readfds);
+    int max_fd = h->tcp_fd;
 
     for (int i = 0; i < DOIP_MAX_TCP_CLIENTS; i++) {
-        if (g_clients[i].in_use) {
-            int fd = g_clients[i].io.getfd(g_clients[i].io.ctx);
+        if (h->clients[i].in_use) {
+            int fd = h->clients[i].io.getfd(h->clients[i].io.ctx);
             FD_SET(fd, &readfds);
             if (fd > max_fd) max_fd = fd;
         }
@@ -544,12 +521,12 @@ int doip_tcp_poll(DoIP_RxIndication rx_cb) {
     if (select(max_fd + 1, &readfds, NULL, NULL, &tv) < 0) return -1;
 
     /* --- Accept new connections --- */
-    if (FD_ISSET(g_tcp_srv_fd, &readfds)) {
+    if (FD_ISSET(h->tcp_fd, &readfds)) {
 #if DOIP_ENABLE_IPV6
         struct sockaddr_in6 ca;  socklen_t al = sizeof(ca);
-        int new_fd = accept(g_tcp_srv_fd, (struct sockaddr *)&ca, &al);
+        int new_fd = accept(h->tcp_fd, (struct sockaddr *)&ca, &al);
         if (new_fd >= 0) {
-            doip_client_t *client = find_free_client();
+            doip_client_t *client = find_free_client(h);
             if (client) {
                 /* Set non-blocking so partial reads return immediately */
                 fcntl(new_fd, F_SETFL,
@@ -557,13 +534,11 @@ int doip_tcp_poll(DoIP_RxIndication rx_cb) {
                 client->fd    = new_fd;
                 client->state = DOIP_TCP_STATE_CONNECTED;
                 client->last_activity_ms = get_time_ms();
-                memset(&client->uds_ctx, 0, sizeof(client->uds_ctx));  /* slot may be reused */
+                client->uds_ctx.ecu              = h;
                 client->uds_ctx.current_session  = UDS_ECU_DEFAULT_SESSION;
                 client->uds_ctx.last_activity_ms = get_time_ms();
-                client->rx_bytes = 0;
-                client->pending_len = 0;
                 client->connect_ms = get_time_ms();
-                if (!client_setup_io(client, new_fd)) {
+                if (!client_setup_io(h, client, new_fd)) {
                     close(new_fd);
                     memset(client, 0, sizeof(*client));
                 } else {
@@ -571,8 +546,8 @@ int doip_tcp_poll(DoIP_RxIndication rx_cb) {
                               client->peer_ip, sizeof(client->peer_ip));
                     LOG_INFO(DOIP_LOG_MODULE_TCP, "Client connected: [%s]:%d (fd=%d)",
                              client->peer_ip, ntohs(ca.sin6_port), new_fd);
-                    if (g_doip_client_connect_cb)
-                        g_doip_client_connect_cb(new_fd, g_doip_async_user_ctx);
+                    if (h->config.on_client_connect)
+                        h->config.on_client_connect(new_fd, h->config.user_context);
                 }
             } else {
                 close(new_fd);
@@ -581,22 +556,20 @@ int doip_tcp_poll(DoIP_RxIndication rx_cb) {
         }
 #else  /* IPv4 */
         struct sockaddr_in ca;  socklen_t al = sizeof(ca);
-        int new_fd = accept(g_tcp_srv_fd, (struct sockaddr *)&ca, &al);
+        int new_fd = accept(h->tcp_fd, (struct sockaddr *)&ca, &al);
         if (new_fd >= 0) {
-            doip_client_t *client = find_free_client();
+            doip_client_t *client = find_free_client(h);
             if (client) {
                 fcntl(new_fd, F_SETFL,
                       fcntl(new_fd, F_GETFL, 0) | O_NONBLOCK);
                 client->fd    = new_fd;
                 client->state = DOIP_TCP_STATE_CONNECTED;
                 client->last_activity_ms = get_time_ms();
-                memset(&client->uds_ctx, 0, sizeof(client->uds_ctx));  /* slot may be reused */
+                client->uds_ctx.ecu              = h;
                 client->uds_ctx.current_session  = UDS_ECU_DEFAULT_SESSION;
                 client->uds_ctx.last_activity_ms = get_time_ms();
-                client->rx_bytes = 0;
-                client->pending_len = 0;
                 client->connect_ms = get_time_ms();
-                if (!client_setup_io(client, new_fd)) {
+                if (!client_setup_io(h, client, new_fd)) {
                     close(new_fd);
                     memset(client, 0, sizeof(*client));
                 } else {
@@ -604,8 +577,8 @@ int doip_tcp_poll(DoIP_RxIndication rx_cb) {
                               client->peer_ip, sizeof(client->peer_ip));
                     LOG_INFO(DOIP_LOG_MODULE_TCP, "Client connected: %s:%d (fd=%d)",
                              client->peer_ip, ntohs(ca.sin_port), new_fd);
-                    if (g_doip_client_connect_cb)
-                        g_doip_client_connect_cb(new_fd, g_doip_async_user_ctx);
+                    if (h->config.on_client_connect)
+                        h->config.on_client_connect(new_fd, h->config.user_context);
                 }
             } else {
                 close(new_fd);
@@ -617,11 +590,11 @@ int doip_tcp_poll(DoIP_RxIndication rx_cb) {
 
     /* --- Service readable clients --- */
     for (int i = 0; i < DOIP_MAX_TCP_CLIENTS; i++) {
-        if (!g_clients[i].in_use) continue;
-        int fd = g_clients[i].io.getfd(g_clients[i].io.ctx);
+        if (!h->clients[i].in_use) continue;
+        int fd = h->clients[i].io.getfd(h->clients[i].io.ctx);
         if (FD_ISSET(fd, &readfds)) {
-            if (process_client_frame(&g_clients[i]) < 0)
-                close_client(&g_clients[i]);
+            if (process_client_frame(h, &h->clients[i]) < 0)
+                close_client(h, &h->clients[i]);
         }
     }
 
@@ -631,15 +604,15 @@ int doip_tcp_poll(DoIP_RxIndication rx_cb) {
     return 0;
 }
 
-void doip_tcp_tick(uint32_t now_ms) {
+void doip_tcp_tick(DoIP_Handle_t *h, uint32_t now_ms) {
     for (int i = 0; i < DOIP_MAX_TCP_CLIENTS; i++) {
-        doip_client_t *c = &g_clients[i];
+        doip_client_t *c = &h->clients[i];
         if (!c->in_use) continue;
         if (c->state == DOIP_TCP_STATE_CONNECTED) {
             if ((int32_t)(now_ms - c->connect_ms) > (int32_t)DOIP_INITIAL_INACTIVITY_TIMEOUT_MS) {
                 LOG_WARN(DOIP_LOG_MODULE_TCP,
                          "Initial inactivity timeout for fd=%d — disconnecting", c->fd);
-                close_client(c);
+                close_client(h, c);
             }
             continue;
         }
@@ -647,13 +620,13 @@ void doip_tcp_tick(uint32_t now_ms) {
 
         if (c->pending_len > 0) {
             if ((int32_t)(now_ms - c->pending_due_ms) >= 0) {
-                client_send_uds(c, c->tester_logical_addr, c->pending_res, c->pending_len);
+                client_send_uds(h, c, c->tester_logical_addr, c->pending_res, c->pending_len);
                 c->pending_len = 0;
             } else if ((int32_t)(now_ms - c->pending_next78_ms) >= 0) {
                 const uint8_t pending[3] = { 0x7F, c->pending_res[0] == 0x7F ? c->pending_res[1]
                                                    : (uint8_t)(c->pending_res[0] - 0x40),
                                              UDS_NRC_RESPONSE_PENDING };
-                client_send_uds(c, c->tester_logical_addr, pending, sizeof(pending));
+                client_send_uds(h, c, c->tester_logical_addr, pending, sizeof(pending));
                 c->pending_next78_ms = now_ms + UDS_P2_STAR_SERVER_MS / 2;
             }
         }
@@ -663,7 +636,7 @@ void doip_tcp_tick(uint32_t now_ms) {
             if ((int32_t)(now_ms - c->alive_check_sent_ms) > (int32_t)DOIP_ALIVE_CHECK_TIMEOUT_MS) {
                 LOG_WARN(DOIP_LOG_MODULE_TCP,
                          "Alive Check timeout for fd=%d — disconnecting", c->fd);
-                close_client(c);
+                close_client(h, c);
             }
         /* Signed difference: last_activity_ms is stamped while polling and can
          * be a millisecond newer than now_ms; unsigned math would wrap and
@@ -679,24 +652,19 @@ void doip_tcp_tick(uint32_t now_ms) {
     }
 }
 
-void doip_tcp_set_faults(const DoIP_FaultConfig_t *faults) {
-    if (faults) g_faults = *faults;
-    else        memset(&g_faults, 0, sizeof(g_faults));
-}
-
-uint8_t doip_tcp_get_client_count(void) {
+uint8_t doip_tcp_get_client_count(const DoIP_Handle_t *h) {
     uint8_t count = 0;
     for (int i = 0; i < DOIP_MAX_TCP_CLIENTS; i++)
-        if (g_clients[i].in_use) count++;
+        if (h->clients[i].in_use) count++;
     return count;
 }
 
-void doip_tcp_deinit(void) {
+void doip_tcp_deinit(DoIP_Handle_t *h) {
     for (int i = 0; i < DOIP_MAX_TCP_CLIENTS; i++)
-        if (g_clients[i].in_use) close_client(&g_clients[i]);
-    if (g_tcp_srv_fd >= 0) { close(g_tcp_srv_fd); g_tcp_srv_fd = -1; }
+        if (h->clients[i].in_use) close_client(h, &h->clients[i]);
+    if (h->tcp_fd >= 0) { close(h->tcp_fd); h->tcp_fd = -1; }
 #if DOIP_ENABLE_TLS
-    doip_tls_deinit(&g_tls_server);
+    doip_tls_deinit(&h->tls);
 #endif
     LOG_INFO(DOIP_LOG_MODULE_TCP, "TCP server stopped");
 }
