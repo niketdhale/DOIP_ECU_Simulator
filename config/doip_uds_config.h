@@ -25,6 +25,14 @@
     0x10, 0x11, 0x14, 0x19, 0x22, 0x23, 0x27, 0x28, \
     0x2E, 0x31, 0x34, 0x36, 0x37, 0x38, 0x3E, 0x85
 
+/* SIDs that are rejected with NRC 0x7F (serviceNotSupportedInActiveSession)
+ * while the client is in the default session. */
+#define UDS_NON_DEFAULT_SESSION_SIDS \
+    0x27, 0x28, 0x2E, 0x31, 0x34, 0x36, 0x37, 0x85
+
+/* Largest UDS response the stack will build (DoIP payload minus SA/TA). */
+#define UDS_MAX_RESPONSE_LEN            (DOIP_MAX_PAYLOAD_SIZE - 4U)
+
 /* ===== Service ID Constants ===== */
 #define UDS_SID_SESSION_CONTROL         0x10
 #define UDS_SID_SESSION_CONTROL_RES     0x50
@@ -62,6 +70,7 @@
 #define UDS_NRC_SERVICE_NOT_SUPPORTED   0x11
 #define UDS_NRC_SUB_FUNCTION_NOT_SUPPORTED 0x12
 #define UDS_NRC_INCORRECT_MESSAGE_LENGTH 0x13
+#define UDS_NRC_RESPONSE_TOO_LONG       0x14
 #define UDS_NRC_CONDITIONS_NOT_CORRECT  0x22
 #define UDS_NRC_REQUEST_SEQUENCE_ERROR  0x24
 #define UDS_NRC_REQUEST_OUT_OF_RANGE    0x31

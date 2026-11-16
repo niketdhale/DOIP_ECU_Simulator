@@ -375,13 +375,88 @@ void test_ecu_reset_valid(void)
 
 void test_routine_control_basic(void)
 {
-    UdsClientContext_t ctx = make_ctx();
+    UdsClientContext_t ctx = make_extended_ctx();
     uint8_t req[] = { UDS_SID_ROUTINE_CONTROL, 0x01, 0xFF, 0x01 };
     int rc = process(&ctx, req, sizeof(req));
 
     TEST_ASSERT_EQUAL_INT(0, rc);
     TEST_ASSERT_EQUAL_HEX8(UDS_SID_ROUTINE_CONTROL_RES, s_resp[0]);
     TEST_ASSERT_EQUAL_HEX8(0x01, s_resp[1]);  /* sub-function echoed */
+}
+
+void test_non_default_only_services_rejected_in_default_session(void)
+{
+    UdsClientContext_t ctx = make_ctx();
+    uint8_t routine[] = { UDS_SID_ROUTINE_CONTROL, 0x01, 0xFF, 0x01 };
+    TEST_ASSERT_EQUAL_INT(-1, process(&ctx, routine, sizeof(routine)));
+    TEST_ASSERT_EQUAL_HEX8(0x7F, s_resp[0]);
+    TEST_ASSERT_EQUAL_HEX8(UDS_SID_ROUTINE_CONTROL, s_resp[1]);
+    TEST_ASSERT_EQUAL_HEX8(UDS_NRC_SERVICE_NOT_SUPPORTED_IN_SESSION, s_resp[2]);
+
+    uint8_t comm_ctrl[] = { UDS_SID_COMMUNICATION_CONTROL, 0x00, 0x01 };  /* auto-responded SID */
+    TEST_ASSERT_EQUAL_INT(-1, process(&ctx, comm_ctrl, sizeof(comm_ctrl)));
+    TEST_ASSERT_EQUAL_HEX8(UDS_NRC_SERVICE_NOT_SUPPORTED_IN_SESSION, s_resp[2]);
+}
+
+/* ── ECU Reset details ────────────────────────────────────────────── */
+
+void test_ecu_reset_returns_to_default_session(void)
+{
+    UdsClientContext_t ctx = make_extended_ctx();
+    ctx.security_unlocked = true;
+    uint8_t req[] = { UDS_SID_ECU_RESET, UDS_RESET_SOFT };
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, req, sizeof(req)));
+    TEST_ASSERT_EQUAL_INT(UDS_SESSION_DEFAULT_STATE, ctx.current_session);
+    TEST_ASSERT_FALSE(ctx.security_unlocked);
+}
+
+void test_ecu_reset_invalid_requests(void)
+{
+    UdsClientContext_t ctx = make_extended_ctx();
+    uint8_t bad_type[] = { UDS_SID_ECU_RESET, 0x7E };
+    TEST_ASSERT_EQUAL_INT(-1, process(&ctx, bad_type, sizeof(bad_type)));
+    TEST_ASSERT_EQUAL_HEX8(UDS_NRC_SUB_FUNCTION_NOT_SUPPORTED, s_resp[2]);
+    uint8_t bad_len[] = { UDS_SID_ECU_RESET, 0x01, 0x00 };
+    TEST_ASSERT_EQUAL_INT(-1, process(&ctx, bad_len, sizeof(bad_len)));
+    TEST_ASSERT_EQUAL_HEX8(UDS_NRC_INCORRECT_MESSAGE_LENGTH, s_resp[2]);
+    /* Rejected requests did not reset the session */
+    TEST_ASSERT_EQUAL_INT(UDS_SESSION_EXTENDED_STATE, ctx.current_session);
+}
+
+/* ── Read DID: multiple identifiers ───────────────────────────────── */
+
+void test_read_multiple_dids(void)
+{
+    UdsClientContext_t ctx = make_ctx();
+    /* VIN, an unsupported DID (skipped), then serial number */
+    uint8_t req[] = { UDS_SID_READ_DATA_BY_ID, 0xF1, 0x90, 0x12, 0x34, 0xF1, 0x8C };
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, req, sizeof(req)));
+
+    size_t sn = strlen(TEST_SERIAL);
+    TEST_ASSERT_EQUAL_UINT16(1 + 2 + DOIP_VIN_LENGTH + 2 + sn, s_rlen);
+    TEST_ASSERT_EQUAL_HEX8(UDS_SID_READ_DATA_BY_ID_RES, s_resp[0]);
+    TEST_ASSERT_EQUAL_HEX8(0xF1, s_resp[1]);
+    TEST_ASSERT_EQUAL_HEX8(0x90, s_resp[2]);
+    TEST_ASSERT_EQUAL_MEMORY(TEST_VIN, &s_resp[3], DOIP_VIN_LENGTH);
+    TEST_ASSERT_EQUAL_HEX8(0xF1, s_resp[3 + DOIP_VIN_LENGTH]);
+    TEST_ASSERT_EQUAL_HEX8(0x8C, s_resp[4 + DOIP_VIN_LENGTH]);
+    TEST_ASSERT_EQUAL_MEMORY(TEST_SERIAL, &s_resp[5 + DOIP_VIN_LENGTH], sn);
+}
+
+void test_read_did_bad_length_and_too_long(void)
+{
+    UdsClientContext_t ctx = make_ctx();
+    uint8_t odd[] = { UDS_SID_READ_DATA_BY_ID, 0xF1, 0x90, 0xF1 };
+    TEST_ASSERT_EQUAL_INT(-1, process(&ctx, odd, sizeof(odd)));
+    TEST_ASSERT_EQUAL_HEX8(UDS_NRC_INCORRECT_MESSAGE_LENGTH, s_resp[2]);
+
+    /* 300 x VIN would need 5700 bytes: must be refused, not overflow the buffer */
+    static uint8_t many[1 + 2 * 300];
+    many[0] = UDS_SID_READ_DATA_BY_ID;
+    for (int i = 0; i < 300; i++) { many[1 + 2 * i] = 0xF1; many[2 + 2 * i] = 0x90; }
+    TEST_ASSERT_EQUAL_INT(-1, process(&ctx, many, sizeof(many)));
+    TEST_ASSERT_EQUAL_UINT16(3, s_rlen);
+    TEST_ASSERT_EQUAL_HEX8(UDS_NRC_RESPONSE_TOO_LONG, s_resp[2]);
 }
 
 /* ── Runtime hook tests ───────────────────────────────────────────── */
@@ -498,6 +573,11 @@ int main(void)
 
     /* Routine Control */
     RUN_TEST(test_routine_control_basic);
+    RUN_TEST(test_non_default_only_services_rejected_in_default_session);
+    RUN_TEST(test_ecu_reset_returns_to_default_session);
+    RUN_TEST(test_ecu_reset_invalid_requests);
+    RUN_TEST(test_read_multiple_dids);
+    RUN_TEST(test_read_did_bad_length_and_too_long);
 
     /* Runtime hook */
     RUN_TEST(test_runtime_hook_intercepts_request);

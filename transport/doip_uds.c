@@ -16,6 +16,18 @@ static uint32_t get_time_ms(void) {
     return (uint32_t)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
 }
 
+/* Write a negative response (7F <sid> <nrc>); returns -1 for handler tail calls. */
+static int neg(uint8_t *res, uint16_t *res_len, uint8_t sid, uint8_t nrc) {
+    res[0] = 0x7F; res[1] = sid; res[2] = nrc; *res_len = 3;
+    return -1;
+}
+
+/* Back to the power-on diagnostic state: default session, security locked. */
+static void enter_default_session(UdsClientContext_t *ctx) {
+    ctx->current_session   = UDS_SESSION_DEFAULT_STATE;
+    ctx->security_unlocked = false;
+}
+
 /* ===== Service Handlers (Stateless: accept ctx pointer) ===== */
 
 static int handle_session_control(UdsClientContext_t *ctx, const uint8_t *req, uint16_t req_len, uint8_t *res, uint16_t *res_len) {
@@ -27,7 +39,7 @@ static int handle_session_control(UdsClientContext_t *ctx, const uint8_t *req, u
 
     bool valid = false;
     switch (session_type) {
-        case UDS_SESSION_DEFAULT: ctx->current_session = UDS_SESSION_DEFAULT_STATE; valid = true; break;
+        case UDS_SESSION_DEFAULT: enter_default_session(ctx); valid = true; break;
         case UDS_SESSION_EXTENDED: if (UDS_ECU_SUPPORTS_EXTENDED) { ctx->current_session = UDS_SESSION_EXTENDED_STATE; valid = true; } break;
         case UDS_SESSION_PROGRAMMING: if (UDS_ECU_SUPPORTS_PROGRAMMING) { ctx->current_session = UDS_SESSION_PROGRAMMING_STATE; valid = true; } break;
     }
@@ -44,47 +56,49 @@ static int handle_session_control(UdsClientContext_t *ctx, const uint8_t *req, u
     return 0;
 }
 
+/* Look up a readable DID; returns its data length or -1 if unsupported. */
+static int did_read(uint16_t did, const char **data) {
+    switch (did) {
+        case UDS_DID_VIN_NUMBER:        *data = g_identity.vin;              return DOIP_VIN_LENGTH;
+        case UDS_DID_SYSTEM_NAME:       *data = g_identity.system_name;      break;
+        case UDS_DID_SOFTWARE_VERSION:  *data = g_identity.software_version; break;
+        case UDS_DID_ECU_SERIAL_NUMBER: *data = g_identity.serial_number;    break;
+        default: return -1;
+    }
+    return (int)strlen(*data);
+}
+
+/* 0x22: one or more DIDs per request. Unsupported DIDs are skipped; the
+ * request is rejected only if none of them is supported (ISO 14229-1). */
 static int handle_read_data_by_id(UdsClientContext_t *ctx, const uint8_t *req, uint16_t req_len, uint8_t *res, uint16_t *res_len) {
     (void)ctx;
-    if (req_len < 3) {
-        res[0] = 0x7F; res[1] = UDS_SID_READ_DATA_BY_ID; res[2] = UDS_NRC_INCORRECT_MESSAGE_LENGTH; *res_len = 3; return -1;
-    }
-    uint16_t did = (req[1] << 8) | req[2];
-    LOG_DEBUG(DOIP_LOG_MODULE_UDS, "Read DID: 0x%04X", did);
+    if (req_len < 3 || (req_len - 1) % 2 != 0)
+        return neg(res, res_len, UDS_SID_READ_DATA_BY_ID, UDS_NRC_INCORRECT_MESSAGE_LENGTH);
 
-    res[0] = UDS_SID_READ_DATA_BY_ID_RES; res[1] = req[1]; res[2] = req[2];
-    switch (did) {
-        case UDS_DID_VIN_NUMBER: {
-            memcpy(&res[3], g_identity.vin, DOIP_VIN_LENGTH);
-            *res_len = 3 + DOIP_VIN_LENGTH;
-            break;
-        }
-        case UDS_DID_SYSTEM_NAME: {
-            size_t n = strlen(g_identity.system_name);
-            memcpy(&res[3], g_identity.system_name, n);
-            *res_len = (uint16_t)(3 + n);
-            break;
-        }
-        case UDS_DID_SOFTWARE_VERSION: {
-            size_t n = strlen(g_identity.software_version);
-            memcpy(&res[3], g_identity.software_version, n);
-            *res_len = (uint16_t)(3 + n);
-            break;
-        }
-        case UDS_DID_ECU_SERIAL_NUMBER: {
-            size_t n = strlen(g_identity.serial_number);
-            memcpy(&res[3], g_identity.serial_number, n);
-            *res_len = (uint16_t)(3 + n);
-            break;
-        }
-        default: res[0] = 0x7F; res[1] = UDS_SID_READ_DATA_BY_ID; res[2] = UDS_NRC_REQUEST_OUT_OF_RANGE; *res_len = 3; return -1;
+    uint16_t out = 1;
+    res[0] = UDS_SID_READ_DATA_BY_ID_RES;
+    for (uint16_t i = 1; i < req_len; i += 2) {
+        uint16_t did = (uint16_t)((req[i] << 8) | req[i + 1]);
+        const char *data = NULL;
+        int n = did_read(did, &data);
+        LOG_DEBUG(DOIP_LOG_MODULE_UDS, "Read DID: 0x%04X%s", did, n < 0 ? " (unsupported)" : "");
+        if (n < 0) continue;
+        if (out + 2U + (unsigned)n > UDS_MAX_RESPONSE_LEN)
+            return neg(res, res_len, UDS_SID_READ_DATA_BY_ID, UDS_NRC_RESPONSE_TOO_LONG);
+        res[out++] = req[i]; res[out++] = req[i + 1];
+        memcpy(&res[out], data, (size_t)n);
+        out += (uint16_t)n;
     }
+    if (out == 1)
+        return neg(res, res_len, UDS_SID_READ_DATA_BY_ID, UDS_NRC_REQUEST_OUT_OF_RANGE);
+    *res_len = out;
     return 0;
 }
 
 /* DIDs writable through 0x2E, backed by the runtime identity (which UDP
  * vehicle announcements also read, so a written VIN is announced too). */
 static int handle_write_data_by_id(UdsClientContext_t *ctx, const uint8_t *req, uint16_t req_len, uint8_t *res, uint16_t *res_len) {
+    (void)ctx;
     uint8_t nrc = 0;
     char   *dst = NULL;
     size_t  max = 0;                       /* max data bytes; for VIN also the exact length */
@@ -101,7 +115,6 @@ static int handle_write_data_by_id(UdsClientContext_t *ctx, const uint8_t *req, 
     if (req_len < 4)                                            nrc = UDS_NRC_INCORRECT_MESSAGE_LENGTH;
     else if (!dst)                                              nrc = UDS_NRC_REQUEST_OUT_OF_RANGE;
     else if (n > max || (did == UDS_DID_VIN_NUMBER && n != max)) nrc = UDS_NRC_INCORRECT_MESSAGE_LENGTH;
-    else if (ctx->current_session == UDS_SESSION_DEFAULT_STATE) nrc = UDS_NRC_SERVICE_NOT_SUPPORTED_IN_SESSION;
 
     if (nrc) {
         res[0] = 0x7F; res[1] = UDS_SID_WRITE_DATA_BY_ID; res[2] = nrc; *res_len = 3; return -1;
@@ -127,12 +140,17 @@ static int handle_tester_present(UdsClientContext_t *ctx, const uint8_t *req, ui
 }
 
 static int handle_ecu_reset(UdsClientContext_t *ctx, const uint8_t *req, uint16_t req_len, uint8_t *res, uint16_t *res_len) {
-    (void)ctx;
-    if (req_len < 2) {
-        res[0] = 0x7F; res[1] = UDS_SID_ECU_RESET; res[2] = UDS_NRC_INCORRECT_MESSAGE_LENGTH; *res_len = 3; return -1;
-    }
-    res[0] = UDS_SID_ECU_RESET_RES; res[1] = req[1]; *res_len = 2;
-    LOG_WARN(DOIP_LOG_MODULE_UDS, "ECU Reset requested (simulated)");
+    if (req_len != 2)
+        return neg(res, res_len, UDS_SID_ECU_RESET, UDS_NRC_INCORRECT_MESSAGE_LENGTH);
+    uint8_t type = req[1] & 0x7F;
+    if (type < UDS_RESET_HARD || type > UDS_RESET_SOFT)
+        return neg(res, res_len, UDS_SID_ECU_RESET, UDS_NRC_SUB_FUNCTION_NOT_SUPPORTED);
+
+    /* Simulated reset: the ECU comes back in the default session, locked */
+    enter_default_session(ctx);
+    DoIP_Fsm_OnUdsSessionChange(UDS_SESSION_DEFAULT);
+    res[0] = UDS_SID_ECU_RESET_RES; res[1] = type; *res_len = 2;
+    LOG_WARN(DOIP_LOG_MODULE_UDS, "ECU Reset type 0x%02X requested (simulated)", type);
     return 0;
 }
 
@@ -178,6 +196,13 @@ static bool sid_has_subfunction(uint8_t sid) {
     }
 }
 
+/* Services only available in a non-default session (extended / programming). */
+static bool sid_needs_non_default_session(uint8_t sid) {
+    const uint8_t list[] = { UDS_NON_DEFAULT_SESSION_SIDS };
+    for (size_t i = 0; i < sizeof(list); i++) if (list[i] == sid) return true;
+    return false;
+}
+
 int doip_uds_init(const DoIP_EcuIdentity_t *identity,
                   int (*uds_request_cb)(uint8_t, const uint8_t*, uint16_t,
                                         uint8_t*, uint16_t, uint16_t*, void*),
@@ -221,7 +246,13 @@ int doip_uds_process_request(UdsClientContext_t *ctx, const uint8_t *req_data, u
     /* S3 Timeout Check */
     if (!doip_uds_is_session_active(ctx, UDS_S3_SERVER_MS)) {
         LOG_WARN(DOIP_LOG_MODULE_UDS, "S3 timeout. Resetting client session to Default.");
-        ctx->current_session = UDS_SESSION_DEFAULT_STATE;
+        enter_default_session(ctx);
+    }
+
+    /* Session gating: these services exist only outside the default session */
+    if (ctx->current_session == UDS_SESSION_DEFAULT_STATE && sid_needs_non_default_session(sid)) {
+        doip_uds_update_activity(ctx);
+        return neg(res_data, res_len, sid, UDS_NRC_SERVICE_NOT_SUPPORTED_IN_SESSION);
     }
 
     /* Tester asked for no positive response: the service still runs and
