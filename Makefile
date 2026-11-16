@@ -198,12 +198,13 @@ TEST_LDFLAGS = -lpthread
 # Integration test flag: inject port-override header before doip_config.h
 INT_CFLAGS   = $(TEST_CFLAGS) -include tests/integration/doip_config_test.h
 
-# Production source files compiled into integration test binaries
-# Note: FEAT_TLS_SRCS already includes doip_io.c; otherwise we add it directly.
+# Production source files compiled into integration test binaries. Always the
+# full set: doip_tls.c / doip_isotp.c compile to nothing unless their define is
+# on, so each test binary picks its features with -D alone (see test-features).
 PROD_SRCS    = core/doip_frame.c core/doip_log.c \
                doip_api.c \
                transport/doip_tcp.c transport/doip_udp.c transport/doip_uds.c \
-               $(FEAT_TLS_SRCS) $(FEAT_ISOTP_SRCS) \
+               transport/doip_io.c transport/doip_tls.c transport/doip_isotp.c \
                state/doip_fsm.c \
                client/doip_client.c
 
@@ -233,6 +234,11 @@ test-server: $(UNITY_SRC) tests/integration/test_server.c $(PROD_SRCS)
 # ----- Integration: server-initiated Alive Check timing (~22 s) ------
 test-alive-bin: $(UNITY_SRC) tests/integration/test_alive_check.c $(PROD_SRCS)
 	$(CC) $(INT_CFLAGS) -o $@ $^ $(TEST_LDFLAGS)
+
+# ----- Feature paths: each binary is built with its own -D, whatever the
+#       DOIP_* make flags are (the tests above always use the default config) --
+test-isotp-server: $(UNITY_SRC) tests/integration/test_isotp_server.c $(PROD_SRCS)
+	$(CC) $(INT_CFLAGS) -DDOIP_ENABLE_ISO_TP=true -o $@ $^ $(TEST_LDFLAGS)
 
 # ----- End-to-end: the real simulator (main.c) driven over sockets ----
 # Built straight from sources with the test flags, so sanitizers apply.
@@ -272,10 +278,16 @@ else
 endif
 	@echo "=== End-to-End Tests Complete ==="
 
+test-features: test-isotp-server
+	@echo ""
+	@echo "=== Feature Tests (port 23400) ==="
+	./test-isotp-server
+	@echo "=== Feature Tests Complete ==="
+
 # Fast CI target: unit + integration + end-to-end (< 30 s)
 test: test-unit test-integration test-e2e
 
-.PHONY: test-unit test-integration test-e2e test-alive test-isotp test
+.PHONY: test-unit test-integration test-e2e test-features test-alive test-isotp test
 
 # =====================================================================
 # Documentation
@@ -292,6 +304,7 @@ clean:
 	rm -f $(LIB_OBJS) $(SHARED_LIB) $(STATIC_LIB) $(SONAME) libdoip.so
 	rm -f $(LIB_TEST_SERVER) $(LIB_TEST_CLIENT) $(LIB_TEST_EXAMPLE)
 	rm -f test-frame test-uds test-isotp test-server test-alive-bin test-sim
+	rm -f test-isotp-server
 	rm -f transport/doip_io.o transport/doip_tls.o transport/doip_isotp.o
 	rm -f transport/doip_io.lo transport/doip_tls.lo transport/doip_isotp.lo
 

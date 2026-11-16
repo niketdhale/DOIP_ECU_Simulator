@@ -13,6 +13,7 @@ test-isotp
 test-server
 test-alive-bin
 test-sim
+test-isotp-server
 __pycache__/
 test_lib_server
 test_lib_client

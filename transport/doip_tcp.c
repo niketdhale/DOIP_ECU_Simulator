@@ -111,6 +111,26 @@ static void client_send_diag(doip_client_t *c, uint16_t tester_addr,
     client_send_frame(c, DOIP_PT_DIAGNOSTIC_MSG, buf, 4U + len);
 }
 
+/**
+ * Send a UDS response (ECU -> tester). With ISO-TP enabled it is segmented
+ * into 8-byte N-PDUs (SF, or FF + CFs), one DoIP diagnostic message each.
+ */
+static void client_send_uds(doip_client_t *c, uint16_t tester_addr,
+                             const uint8_t *data, uint16_t len)
+{
+#if DOIP_ENABLE_ISO_TP
+    /* ponytail: the Consecutive Frames follow the First Frame immediately; the
+     * tester's Flow Control (block size, STmin) is neither awaited nor honoured.
+     * Add a TX state machine driven from doip_tcp_tick() if a tester needs it. */
+    enum { MAX_SEGS = 1 + DOIP_ISOTP_MAX_PDU / 7 };
+    uint8_t segs[MAX_SEGS][8];
+    int n = doip_isotp_tx(&c->isotp_ctx, data, len, segs, MAX_SEGS);
+    for (int i = 0; i < n; i++) client_send_diag(c, tester_addr, segs[i], 8);
+#else
+    client_send_diag(c, tester_addr, data, len);
+#endif
+}
+
 static doip_client_t *find_free_client(void) {
     for (int i = 0; i < DOIP_MAX_TCP_CLIENTS; i++) {
         if (!g_clients[i].in_use) {
@@ -302,6 +322,18 @@ next_frame:
                 client_send_frame(client, DOIP_PT_DIAGNOSTIC_NACK, nack, sizeof(nack));
                 break;
             }
+            /* The DoIP ACK confirms receipt of every accepted diagnostic message
+             * (with ISO-TP: of every N-PDU) and is sent even when no UDS
+             * response follows. Its source is the address the tester targeted;
+             * the UDS response itself always comes from the ECU's physical address. */
+            uint8_t ack_payload[5];
+            put_be16(&ack_payload[0], target_addr);
+            put_be16(&ack_payload[2], tester_addr);
+            ack_payload[4] = 0x00;
+            if (!g_faults.drop_diag_ack)
+                client_send_frame(client, DOIP_PT_DIAGNOSTIC_ACK,
+                                   ack_payload, sizeof(ack_payload));
+
             uint8_t *uds_req     = pl + 4;
             uint16_t uds_req_len = (uint16_t)(hdr.payload_length - 4);
 
@@ -348,21 +380,10 @@ next_frame:
             if (functional && doip_uds_functional_suppresses(uds_response, uds_res_len))
                 uds_res_len = 0;
 
-            /* The DoIP ACK confirms receipt of the request and is sent even
-             * when no UDS response follows. Its source is the address the
-             * tester targeted; the UDS response itself always comes from the
-             * ECU's physical address. */
-            uint8_t ack_payload[5];
-            put_be16(&ack_payload[0], target_addr);
-            put_be16(&ack_payload[2], tester_addr);
-            ack_payload[4] = 0x00;
-            if (!g_faults.drop_diag_ack)
-                client_send_frame(client, DOIP_PT_DIAGNOSTIC_ACK,
-                                   ack_payload, sizeof(ack_payload));
             if (uds_res_len == 0 || g_faults.drop_response) break;
 
             if (busy || g_faults.response_delay_ms == 0) {
-                client_send_diag(client, tester_addr, uds_response, uds_res_len);
+                client_send_uds(client, tester_addr, uds_response, uds_res_len);
                 break;
             }
             /* Hold the response back; doip_tcp_tick() releases it */
@@ -373,7 +394,7 @@ next_frame:
             client->pending_next78_ms = client->pending_due_ms;   /* i.e. never */
             if (g_faults.response_delay_ms > UDS_P2_SERVER_MS) {
                 const uint8_t pending[3] = { 0x7F, uds_req[0], UDS_NRC_RESPONSE_PENDING };
-                client_send_diag(client, tester_addr, pending, sizeof(pending));
+                client_send_uds(client, tester_addr, pending, sizeof(pending));
                 client->pending_next78_ms = now + UDS_P2_STAR_SERVER_MS / 2;
             }
             break;
@@ -611,13 +632,13 @@ void doip_tcp_tick(uint32_t now_ms) {
 
         if (c->pending_len > 0) {
             if ((int32_t)(now_ms - c->pending_due_ms) >= 0) {
-                client_send_diag(c, c->tester_logical_addr, c->pending_res, c->pending_len);
+                client_send_uds(c, c->tester_logical_addr, c->pending_res, c->pending_len);
                 c->pending_len = 0;
             } else if ((int32_t)(now_ms - c->pending_next78_ms) >= 0) {
                 const uint8_t pending[3] = { 0x7F, c->pending_res[0] == 0x7F ? c->pending_res[1]
                                                    : (uint8_t)(c->pending_res[0] - 0x40),
                                              UDS_NRC_RESPONSE_PENDING };
-                client_send_diag(c, c->tester_logical_addr, pending, sizeof(pending));
+                client_send_uds(c, c->tester_logical_addr, pending, sizeof(pending));
                 c->pending_next78_ms = now_ms + UDS_P2_STAR_SERVER_MS / 2;
             }
         }
