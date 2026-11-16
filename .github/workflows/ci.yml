@@ -32,6 +32,9 @@ jobs:
       - name: Two instances on two threads under ThreadSanitizer
         if: matrix.flags == ''
         run: make test-tsan
+      - name: Install into a scratch prefix and build a program against it
+        if: matrix.flags == ''
+        run: make test-install
 
   features:
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository

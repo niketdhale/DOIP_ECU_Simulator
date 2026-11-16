@@ -132,21 +132,33 @@ install: lib
 	install -m 644 $(STATIC_LIB)  $(DESTDIR)$(PREFIX)/lib/
 	-ldconfig -n $(DESTDIR)$(PREFIX)/lib 2>/dev/null || true
 	@# --- Headers (flatten into include/doip/, rewrite include paths) ---
+	@# One -e per rule: a backslash-newline inside a quoted sed script is not a
+	@# line continuation, and sed then rejects the whole script.
 	@for h in $(PUBLIC_HDRS); do \
-	    sed 's|#include "include/|#include "|g; \
-	         s|#include "config/|#include "|g; \
-	         s|#include "core/|#include "|g; \
-	         s|#include "client/|#include "|g; \
-	         s|#include "\.\./config/|#include "|g; \
-	         s|#include "\.\./core/|#include "|g; \
-	         s|#include "\.\./client/|#include "|g; \
-	         s|#include "\.\./|#include "|g' \
-	         $$h > $(DESTDIR)$(PREFIX)/include/doip/$$(basename $$h); \
+	    sed -e 's|#include "include/|#include "|g' \
+	        -e 's|#include "config/|#include "|g' \
+	        -e 's|#include "core/|#include "|g' \
+	        -e 's|#include "client/|#include "|g' \
+	        -e 's|#include "\.\./config/|#include "|g' \
+	        -e 's|#include "\.\./core/|#include "|g' \
+	        -e 's|#include "\.\./client/|#include "|g' \
+	        -e 's|#include "\.\./|#include "|g' \
+	        $$h > $(DESTDIR)$(PREFIX)/include/doip/$$(basename $$h) || exit 1; \
 	    chmod 644 $(DESTDIR)$(PREFIX)/include/doip/$$(basename $$h); \
 	done
 	@# --- pkg-config ---
 	sed 's|@PREFIX@|$(PREFIX)|g; s|@VERSION@|$(VERSION)|g' doip.pc.in \
 	    > $(DESTDIR)$(PREFIX)/lib/pkgconfig/doip.pc
+
+# Install into a scratch prefix (build/install-check), then build and run a
+# program that uses only <doip/doip.h> and libdoip from there.
+test-install:
+	rm -rf build/install-check
+	$(MAKE) install PREFIX=/usr DESTDIR=$(CURDIR)/build/install-check
+	$(CC) -Wall -Wextra -Werror -std=c11 -D_DEFAULT_SOURCE -Ibuild/install-check/usr/include \
+	    tests/install/consumer.c -Lbuild/install-check/usr/lib -ldoip $(LDFLAGS) \
+	    -o build/install-check/consumer
+	LD_LIBRARY_PATH=build/install-check/usr/lib build/install-check/consumer
 
 uninstall:
 	rm -rf $(DESTDIR)$(PREFIX)/include/doip
@@ -382,8 +394,9 @@ clean:
 	rm -f test-frame test-uds test-isotp test-server test-alive-bin test-sim test-multi test-multi-tsan
 	rm -f test-isotp-server test-tls test-server-ipv6
 	rm -f $(FUZZ_BINS) crash-fuzz-*.bin
-	rm -rf $(CERT_DIR)
+	rm -rf build/install-check
+	rm -rf tests/certs
 	rm -f transport/doip_io.o transport/doip_tls.o transport/doip_isotp.o
 	rm -f transport/doip_io.lo transport/doip_tls.lo transport/doip_isotp.lo
 
-.PHONY: all lib test-lib install uninstall docs clean
+.PHONY: all lib test-lib install test-install uninstall docs clean

@@ -278,6 +278,9 @@ make test-alive && ./test-alive-bin
 
 # Two instances on two threads under ThreadSanitizer
 make test-tsan
+
+# Install into build/install-check and build + run a program against that tree only
+make test-install
 ```
 
 **Test suites:**
