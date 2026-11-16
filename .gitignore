@@ -16,6 +16,11 @@ test-sim
 test-isotp-server
 test-tls
 test-server-ipv6
+fuzz-uds
+fuzz-isotp
+fuzz-tcp
+fuzz-tcp-isotp
+crash-fuzz-*.bin
 tests/certs/
 __pycache__/
 test_lib_server

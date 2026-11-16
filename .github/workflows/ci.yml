@@ -21,7 +21,7 @@ jobs:
           - ""
           - "DOIP_2019=1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Build simulator, client and library (warnings are errors)
         run: make -j"$(nproc)" all lib ${{ matrix.flags }} CC="gcc -Werror"
       - name: Unit, integration and end-to-end tests under ASan/UBSan
@@ -34,10 +34,25 @@ jobs:
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install OpenSSL headers
         run: sudo apt-get update && sudo apt-get install -y libssl-dev
       - name: Build with TLS, IPv6 and ISO-TP enabled (warnings are errors)
         run: make -j"$(nproc)" all lib DOIP_TLS=1 DOIP_IPV6=1 DOIP_ISOTP=1 CC="gcc -Werror"
       - name: ISO-TP, TLS and IPv6 server tests under ASan/UBSan
         run: make test-features SANITIZE="$SANITIZE"
+
+  fuzz:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Mutation fuzzing under ASan/UBSan (200000 inputs per target)
+        run: make fuzz
+      - name: Coverage-guided fuzzing with libFuzzer (20 s per target)
+        run: |
+          make clean
+          make fuzz FUZZ_ENGINE=libfuzzer
+          for target in fuzz-uds fuzz-isotp fuzz-tcp fuzz-tcp-isotp; do
+            ./$target -max_total_time=20 -print_final_stats=1
+          done

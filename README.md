@@ -276,13 +276,43 @@ make test-server && ./test-server
 make test-alive && ./test-alive-bin
 ```
 
-**Test counts on master (baseline):**
-- 10 frame unit tests
-- 18 UDS unit tests
-- 14 ISO-TP unit tests (`make DOIP_ISOTP=1 test-isotp`)
-- 11 server integration tests
-- 3 alive check timing tests
-- **Total: 56 tests**
+**Test suites:**
+
+| Suite | Target | Tests |
+|-------|--------|-------|
+| Frame unit tests | `make test` | 10 |
+| UDS unit tests | `make test` | 36 |
+| ISO-TP unit tests | `make test` | 14 |
+| Server integration tests (in-process server, port 23400) | `make test` | 25 |
+| End-to-end tests of the binary (port 24400) | `make test` | 10 |
+| Alive-check timing tests | `make test-alive` | 3 |
+| ISO-TP server integration tests | `make test-features` | 5 |
+| TLS server integration tests | `make test-features` | 6 |
+| Integration suite against the IPv6 dual-stack server | `make test-features` | 26 |
+
+`make test` always tests the default configuration (plus `DOIP_2019=1` if given); the `DOIP_TLS` / `DOIP_IPV6` / `DOIP_ISOTP` flags only affect the simulator and library build. The feature code paths are covered by `make test-features`, where each test binary is built with its own define.
+
+### Fuzzing
+
+```bash
+# Any compiler: ASan/UBSan + a built-in mutator, 200000 inputs per target (a few seconds, deterministic)
+make fuzz
+make fuzz FUZZ_RUNS=5000000        # longer
+FUZZ_SEED=7 ./fuzz-uds             # another deterministic sequence
+
+# clang: coverage-guided libFuzzer binaries - run each as long as you like
+make clean && make fuzz FUZZ_ENGINE=libfuzzer
+./fuzz-tcp -max_total_time=300
+```
+
+| Target | What it feeds |
+|--------|---------------|
+| `fuzz-uds` | Sequences of UDS requests into the service layer (all handlers, session and security state) |
+| `fuzz-isotp` | N-PDUs into ISO-TP reassembly, plus a segment-and-reassemble round trip |
+| `fuzz-tcp` | A byte stream, split into arbitrary reads, into the TCP server's frame handling: header validation, reassembly, routing activation, diagnostic dispatch |
+| `fuzz-tcp-isotp` | The same with ISO-TP enabled |
+
+When a sanitizer aborts, the built-in mutator saves the input as `crash-<target>.bin`; replay it with `./fuzz-uds crash-fuzz-uds.bin`.
 
 ---
 

@@ -309,6 +309,48 @@ test: test-unit test-integration test-e2e
 .PHONY: test-unit test-integration test-e2e test-features test-alive test-isotp test
 
 # =====================================================================
+# Fuzzing  (tests/fuzz)
+#   make fuzz                         any compiler: ASan/UBSan + built-in mutator,
+#                                     FUZZ_RUNS inputs per target, deterministic
+#   make fuzz FUZZ_ENGINE=libfuzzer   clang: coverage-guided libFuzzer binaries,
+#                                     built only - run them as long as you like
+# =====================================================================
+FUZZ_RUNS  ?= 200000
+FUZZ_CFLAGS = -Wall -Wextra -g -O1 -std=c11 -D_DEFAULT_SOURCE \
+              -I. -Iconfig -Icore -Itransport -Istate -Itests/mocks -Itests/fuzz
+ifeq ($(FUZZ_ENGINE),libfuzzer)
+  FUZZ_CC     = clang
+  FUZZ_SAN    = -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined
+  FUZZ_DRIVER =
+else
+  FUZZ_CC     = $(CC)
+  FUZZ_SAN    = -fsanitize=address,undefined -fno-sanitize-recover=undefined
+  FUZZ_DRIVER = tests/fuzz/standalone.c
+endif
+FUZZ_BUILD  = $(FUZZ_CC) $(FUZZ_CFLAGS) $(FUZZ_SAN)
+FUZZ_UDS    = transport/doip_uds.c $(MOCK_FSM_SRC) core/doip_log.c
+FUZZ_TCP    = $(FUZZ_UDS) transport/doip_io.c core/doip_frame.c
+FUZZ_BINS   = fuzz-uds fuzz-isotp fuzz-tcp fuzz-tcp-isotp
+
+fuzz-uds: tests/fuzz/fuzz_uds.c $(FUZZ_UDS) $(FUZZ_DRIVER)
+	$(FUZZ_BUILD) -o $@ $^
+fuzz-isotp: tests/fuzz/fuzz_isotp.c transport/doip_isotp.c core/doip_log.c $(FUZZ_DRIVER)
+	$(FUZZ_BUILD) -DDOIP_ENABLE_ISO_TP=true -o $@ $^
+# doip_tcp.c is #included by the harness (to reach its statics), so it is a
+# dependency but not a separate compilation unit
+fuzz-tcp: tests/fuzz/fuzz_tcp_stream.c $(FUZZ_TCP) $(FUZZ_DRIVER) | transport/doip_tcp.c
+	$(FUZZ_BUILD) -o $@ $^
+fuzz-tcp-isotp: tests/fuzz/fuzz_tcp_stream.c $(FUZZ_TCP) transport/doip_isotp.c $(FUZZ_DRIVER) | transport/doip_tcp.c
+	$(FUZZ_BUILD) -DDOIP_ENABLE_ISO_TP=true -o $@ $^
+
+fuzz: $(FUZZ_BINS)
+ifneq ($(FUZZ_ENGINE),libfuzzer)
+	@for f in $(FUZZ_BINS); do FUZZ_RUNS=$(FUZZ_RUNS) ./$$f || exit 1; done
+endif
+
+.PHONY: fuzz
+
+# =====================================================================
 # Documentation
 # =====================================================================
 docs:
@@ -324,6 +366,7 @@ clean:
 	rm -f $(LIB_TEST_SERVER) $(LIB_TEST_CLIENT) $(LIB_TEST_EXAMPLE)
 	rm -f test-frame test-uds test-isotp test-server test-alive-bin test-sim
 	rm -f test-isotp-server test-tls test-server-ipv6
+	rm -f $(FUZZ_BINS) crash-fuzz-*.bin
 	rm -rf $(CERT_DIR)
 	rm -f transport/doip_io.o transport/doip_tls.o transport/doip_isotp.o
 	rm -f transport/doip_io.lo transport/doip_tls.lo transport/doip_isotp.lo
