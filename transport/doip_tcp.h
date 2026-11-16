@@ -13,23 +13,20 @@
 #include <stdbool.h>
 #include <netinet/in.h>   /* INET6_ADDRSTRLEN */
 
-#if (DOIP_LOGICAL_ADDR_SIZE == 2)
-    typedef uint16_t doip_logical_addr_t;
-#else
-    typedef uint32_t doip_logical_addr_t;
-#endif
+typedef uint16_t doip_logical_addr_t;   /* 16-bit in both ISO 13400-2 editions */
 
+/* Routing Activation Request (7 bytes; optional 4-byte OEM field not used) */
 typedef struct __attribute__((packed)) {
     doip_logical_addr_t tester_logical_address;
     uint8_t             activation_type;
     uint32_t            reserved;
 } doip_routing_act_req_t;
 
+/* Routing Activation Response (9 bytes; optional 4-byte OEM field not used) */
 typedef struct __attribute__((packed)) {
-    doip_logical_addr_t ecu_logical_address;
     doip_logical_addr_t tester_logical_address;
+    doip_logical_addr_t ecu_logical_address;
     uint8_t             activation_code;
-    uint8_t             reserved_align;
     uint32_t            reserved;
 } doip_routing_act_res_t;
 

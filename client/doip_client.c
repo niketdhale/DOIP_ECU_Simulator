@@ -171,7 +171,7 @@ DoIP_ClientStatus_t DoIP_Client_Discover(const char *target_ip, uint16_t target_
         return DOIP_CLIENT_ERR_IO;
     }
 
-    /* Wait for Vehicle Announcement (0x0003) or VIN Response (0x0002) */
+    /* Wait for Vehicle Announcement / Vehicle ID Response (0x0004) */
     uint8_t rx_buf[DOIP_HEADER_SIZE + sizeof(doip_vehicle_announce_t) + 16];
     struct sockaddr_in src_addr;
     socklen_t src_len = sizeof(src_addr);
@@ -186,17 +186,18 @@ DoIP_ClientStatus_t DoIP_Client_Discover(const char *target_ip, uint16_t target_
     if (doip_deserialize_header(rx_buf, (size_t)n, &rx_hdr) < 0)
         return DOIP_CLIENT_ERR_NACK;
 
-    if (rx_hdr.payload_type != DOIP_PT_VIN_RES &&
-        rx_hdr.payload_type != DOIP_PT_VEHICLE_ANNOUNCE)
+    if (rx_hdr.payload_type != DOIP_PT_VEHICLE_ANNOUNCE)
         return DOIP_CLIENT_ERR_IO;
 
-    if (rx_hdr.payload_length < 17U + 2U)  /* VIN(17) + logical_address(2) minimum */
-        return DOIP_CLIENT_ERR_IO;
-    if ((size_t)n < DOIP_HEADER_SIZE + sizeof(doip_vehicle_announce_t))
+    /* The trailing VIN/GID sync status byte is optional (32 or 33 bytes) */
+    size_t ann_len = (size_t)n - DOIP_HEADER_SIZE;
+    if (ann_len > sizeof(doip_vehicle_announce_t)) ann_len = sizeof(doip_vehicle_announce_t);
+    if (rx_hdr.payload_length < sizeof(doip_vehicle_announce_t) - 1U ||
+        ann_len < sizeof(doip_vehicle_announce_t) - 1U)
         return DOIP_CLIENT_ERR_IO;
 
-    doip_vehicle_announce_t ann_buf;
-    memcpy(&ann_buf, rx_buf + DOIP_HEADER_SIZE, sizeof(ann_buf));
+    doip_vehicle_announce_t ann_buf = {0};
+    memcpy(&ann_buf, rx_buf + DOIP_HEADER_SIZE, ann_len);
     const doip_vehicle_announce_t *ann = &ann_buf;
 
     inet_ntop(AF_INET, &src_addr.sin_addr, result_out->server_ip, INET_ADDRSTRLEN);
@@ -295,11 +296,7 @@ DoIP_ClientStatus_t DoIP_Client_ActivateRouting(DoIP_Client_t *client,
 
     doip_routing_act_req_t req;
     memset(&req, 0, sizeof(req));
-#if (DOIP_LOGICAL_ADDR_SIZE == 2)
     req.tester_logical_address = htons(client->tester_la);
-#else
-    req.tester_logical_address = htonl(client->tester_la);
-#endif
     req.activation_type = activation_type;
 
     if (doip_send_frame(client->tcp_fd, DOIP_PT_ROUTING_ACT_REQ, &req, sizeof(req)) < 0) {
@@ -327,13 +324,9 @@ DoIP_ClientStatus_t DoIP_Client_ActivateRouting(DoIP_Client_t *client,
 
     if (out_activation_code) *out_activation_code = act_code;
 
-#if (DOIP_LOGICAL_ADDR_SIZE == 2)
     client->peer_ecu_la = ntohs(res->ecu_logical_address);
-#else
-    client->peer_ecu_la = ntohl(res->ecu_logical_address);
-#endif
 
-    if (act_code == DOIP_ACT_SUCCESS || act_code == DOIP_ACT_ALREADY_ACTIVE) {
+    if (act_code == DOIP_ACT_SUCCESS) {
         client->state = DOIP_CLI_STATE_ACTIVATED;
         LOG_INFO(DOIP_LOG_MODULE_CLIENT,
                  "Routing activated (code=0x%02X, ecu_la=0x%04X)",

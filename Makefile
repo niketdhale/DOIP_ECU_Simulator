@@ -10,6 +10,12 @@ LDFLAGS = -lpthread
 #   make DOIP_ISOTP=1                           — ISO-TP segmentation
 #   make DOIP_TLS=1 DOIP_IPV6=1 DOIP_ISOTP=1  — all features
 
+#   make DOIP_2019=1                            — ISO 13400-2:2019 header version (0x03)
+ifeq ($(DOIP_2019),1)
+  VERSION_CFLAGS = -DDOIP_PROTOCOL_VERSION_SELECTED=1
+endif
+CFLAGS += $(VERSION_CFLAGS)
+
 ifeq ($(DOIP_IPV6),1)
   CFLAGS  += -DDOIP_ENABLE_IPV6=true
 endif
@@ -182,7 +188,10 @@ $(LIB_TEST_EXAMPLE): example/consumer.c $(SHARED_LIB)
 # Flags for test binaries: debug symbols, no optimisation, all include paths
 TEST_CFLAGS  = -Wall -Wextra -O0 -g -std=c11 -D_DEFAULT_SOURCE \
                -I. -Iconfig -Icore -Itransport -Istate \
-               -Itests/vendor/unity -Itests/mocks
+               -Itests/vendor/unity -Itests/mocks $(VERSION_CFLAGS) $(SANITIZE)
+
+# Sanitizers for test binaries, e.g.: make test SANITIZE="-fsanitize=address,undefined"
+SANITIZE    ?=
 
 TEST_LDFLAGS = -lpthread
 

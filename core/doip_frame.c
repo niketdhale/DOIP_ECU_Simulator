@@ -5,8 +5,13 @@
 #include <arpa/inet.h>
 
 static int doip_validate_header(const doip_header_t *hdr) {
-    return (hdr->protocol_version == DOIP_PROTOCOL_VERSION &&
-            hdr->inverse_version == DOIP_INVERSE_VERSION) ? 1 : 0;
+    if (hdr->protocol_version == DOIP_PROTOCOL_VERSION &&
+        hdr->inverse_version == DOIP_INVERSE_VERSION) return 1;
+    /* ISO 13400-2: testers that do not yet know the entity's version send
+     * vehicle identification requests with the default version 0xFF. */
+    return (hdr->protocol_version == 0xFFU && hdr->inverse_version == 0x00U &&
+            hdr->payload_type >= DOIP_PT_VIN_REQ &&
+            hdr->payload_type <= DOIP_PT_VIN_REQ_WITH_VIN) ? 1 : 0;
 }
 
 ssize_t doip_serialize_header(const doip_header_t *in, uint8_t *out, size_t out_len) {

@@ -16,21 +16,23 @@
 #include <stdbool.h>
 
 /* ===== DoIP Version Selection ===== */
-#define DOIP_VERSION_2012   0  /* ISO 13400-2:2012 (16-bit addresses) */
-#define DOIP_VERSION_2019   1  /* ISO 13400-2:2019 (32-bit addresses) */
+#define DOIP_VERSION_2012   0  /* ISO 13400-2:2012 — protocol version 0x02 */
+#define DOIP_VERSION_2019   1  /* ISO 13400-2:2019 — protocol version 0x03 */
 
-/* CONFIGURABLE: Set your DoIP version here */
+/* CONFIGURABLE: Set your DoIP version here (or build with: make DOIP_2019=1) */
+#ifndef DOIP_PROTOCOL_VERSION_SELECTED
 #define DOIP_PROTOCOL_VERSION_SELECTED  DOIP_VERSION_2012
+#endif
 
-/* ===== Protocol Version Constants ===== */
+/* ===== Protocol Version Constants =====
+ * Logical addresses are 16-bit in both editions; only the header
+ * version byte (and its bitwise inverse) differs. */
 #if (DOIP_PROTOCOL_VERSION_SELECTED == DOIP_VERSION_2012)
     #define DOIP_PROTOCOL_VERSION       0x02U
     #define DOIP_INVERSE_VERSION        0xFDU
-    #define DOIP_LOGICAL_ADDR_SIZE      2U   /* 16-bit for 2012 */
 #elif (DOIP_PROTOCOL_VERSION_SELECTED == DOIP_VERSION_2019)
-    #define DOIP_PROTOCOL_VERSION       0x02U
-    #define DOIP_INVERSE_VERSION        0xFDU
-    #define DOIP_LOGICAL_ADDR_SIZE      4U   /* 32-bit for 2019 */
+    #define DOIP_PROTOCOL_VERSION       0x03U
+    #define DOIP_INVERSE_VERSION        0xFCU
 #else
     #error "Unsupported DoIP version selected"
 #endif
@@ -45,11 +47,19 @@
 /* Valid ECU Ranges: 0x0001-0x0DFF, 0x1000-0x7FFF, 0x8000-0xDFFF */
 #define DOIP_ECU_LOGICAL_ADDRESS    0x1003U
 #define DOIP_OBD_LOGICAL_ADDRESS    0x1340U
-#define DOIP_TESTER_LOGICAL_ADDRESS 0x0E00U     /* ISO 13400-2: reserved for external testers */
+#define DOIP_TESTER_LOGICAL_ADDRESS 0x0E00U     /* Default tester address used by the client */
+/* ISO 13400-2: range reserved for external test equipment; routing
+ * activation from any other source address is rejected (code 0x00). */
+#define DOIP_TESTER_ADDR_MIN        0x0E00U
+#define DOIP_TESTER_ADDR_MAX        0x0FFFU
 
 /* ===== Network Configuration ===== */
+#ifndef DOIP_UDP_PORT
 #define DOIP_UDP_PORT               13400U
+#endif
+#ifndef DOIP_TCP_PORT
 #define DOIP_TCP_PORT               13400U
+#endif
 #define DOIP_MULTICAST_ADDR         "224.0.0.1"
 #define DOIP_BROADCAST_ADDR         "255.255.255.255"
 

@@ -181,13 +181,13 @@ void test_tcp_routing_already_active(void)
     DoIP_Client_t *c = client_connect_and_activate();
     TEST_ASSERT_NOT_NULL(c);
 
-    /* Activate a second time on the same connection */
+    /* Activate a second time on the same connection with the same SA */
     uint8_t act_code = 0xFF;
     DoIP_ClientStatus_t rc = DoIP_Client_ActivateRouting(c, 0x00, &act_code);
 
-    /* Server accepts but returns code 0x11 = routingActivationSuccessful_ConfirmedAlready */
+    /* ISO 13400-2: re-activation of an already-registered SA succeeds (0x10) */
     TEST_ASSERT_EQUAL_INT(DOIP_CLIENT_OK, rc);
-    TEST_ASSERT_EQUAL_HEX8(0x11, act_code);
+    TEST_ASSERT_EQUAL_HEX8(0x10, act_code);
 
     client_destroy(c);
 }
@@ -525,6 +525,156 @@ void test_multiple_clients_independent_sessions(void)
 
 /* ── Entry point ───────────────────────────────────────────────────── */
 
+
+/* ── Raw-frame helpers for protocol conformance tests ──────────────── */
+
+/** Build header + payload into @p out with explicit version bytes; returns frame length. */
+static size_t raw_frame(uint8_t *out, uint8_t ver, uint16_t pt,
+                        const uint8_t *pl, uint32_t plen)
+{
+    doip_header_t hdr = { ver, (uint8_t)~ver, pt, plen };
+    doip_serialize_header(&hdr, out, DOIP_HEADER_SIZE);
+    if (plen) memcpy(out + DOIP_HEADER_SIZE, pl, plen);
+    return DOIP_HEADER_SIZE + plen;
+}
+
+/** Send one UDP request to the server; returns bytes received (<=0 on timeout). */
+static ssize_t udp_exchange(uint8_t ver, uint16_t pt, const uint8_t *pl, uint32_t plen,
+                            uint8_t *resp, size_t resp_size)
+{
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    struct timeval tv = { .tv_sec = 0, .tv_usec = 500000 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    struct sockaddr_in srv = { .sin_family = AF_INET, .sin_port = htons(DOIP_UDP_PORT) };
+    inet_pton(AF_INET, "127.0.0.1", &srv.sin_addr);
+
+    uint8_t frame[DOIP_HEADER_SIZE + 32];
+    size_t flen = raw_frame(frame, ver, pt, pl, plen);
+    sendto(fd, frame, flen, 0, (struct sockaddr*)&srv, sizeof(srv));
+    ssize_t n = recv(fd, resp, resp_size, 0);
+    close(fd);
+    return n;
+}
+
+/** Send one TCP frame and read whatever comes back (<=0 on timeout/close). */
+static ssize_t tcp_exchange(int fd, uint16_t pt, const uint8_t *pl, uint32_t plen,
+                            uint8_t *resp, size_t resp_size)
+{
+    struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    uint8_t frame[DOIP_HEADER_SIZE + 32];
+    size_t flen = raw_frame(frame, DOIP_PROTOCOL_VERSION, pt, pl, plen);
+    send(fd, frame, flen, 0);
+    return recv(fd, resp, resp_size, 0);
+}
+
+/* ── Test 12: Vehicle ID request → 0x0004 response, 33-byte payload ── */
+
+void test_udp_vehicle_id_response_layout(void)
+{
+    uint8_t resp[DOIP_HEADER_SIZE + 64];
+    /* Default version 0xFF/0x00 must be accepted for vehicle ID requests */
+    ssize_t n = udp_exchange(0xFF, 0x0001, NULL, 0, resp, sizeof(resp));
+    TEST_ASSERT_EQUAL_INT(DOIP_HEADER_SIZE + 33, n);
+
+    TEST_ASSERT_EQUAL_HEX8(DOIP_PROTOCOL_VERSION, resp[0]);
+    TEST_ASSERT_EQUAL_HEX8(0x00, resp[2]);
+    TEST_ASSERT_EQUAL_HEX8(0x04, resp[3]);           /* PT 0x0004 */
+    const uint8_t *pl = resp + DOIP_HEADER_SIZE;
+    TEST_ASSERT_EQUAL_MEMORY(g_test_identity.vin, pl, 17);
+    TEST_ASSERT_EQUAL_HEX8(DOIP_ECU_LOGICAL_ADDRESS >> 8,   pl[17]);
+    TEST_ASSERT_EQUAL_HEX8(DOIP_ECU_LOGICAL_ADDRESS & 0xFF, pl[18]);
+    TEST_ASSERT_EQUAL_MEMORY(g_test_identity.eid, pl + 19, 6);
+    TEST_ASSERT_EQUAL_MEMORY(g_test_identity.gid, pl + 25, 6);
+}
+
+/* ── Test 13: EID (0x0002) / VIN (0x0003) filtered requests ─────────── */
+
+void test_udp_vehicle_id_filtered_requests(void)
+{
+    uint8_t resp[DOIP_HEADER_SIZE + 64];
+    uint8_t other[17];
+    memset(other, 0x99, sizeof(other));
+
+    /* Matching EID / VIN → answered */
+    TEST_ASSERT_GREATER_THAN_INT(0, udp_exchange(DOIP_PROTOCOL_VERSION, 0x0002,
+                                 g_test_identity.eid, 6, resp, sizeof(resp)));
+    TEST_ASSERT_GREATER_THAN_INT(0, udp_exchange(DOIP_PROTOCOL_VERSION, 0x0003,
+                                 (const uint8_t*)g_test_identity.vin, 17, resp, sizeof(resp)));
+    /* Non-matching → silently ignored */
+    TEST_ASSERT_LESS_THAN_INT(1, udp_exchange(DOIP_PROTOCOL_VERSION, 0x0002,
+                              other, 6, resp, sizeof(resp)));
+    TEST_ASSERT_LESS_THAN_INT(1, udp_exchange(DOIP_PROTOCOL_VERSION, 0x0003,
+                              other, 17, resp, sizeof(resp)));
+}
+
+/* ── Test 14: Routing activation response layout + SA validation ────── */
+
+void test_routing_activation_wire_format_and_sa_range(void)
+{
+    uint8_t resp[64];
+
+    /* Valid tester 0x0E80 → 9-byte response: tester(2) entity(2) code(1) reserved(4) */
+    int fd = raw_tcp_connect();
+    TEST_ASSERT_GREATER_THAN_INT(-1, fd);
+    const uint8_t ok_req[7] = { 0x0E, 0x80, 0x00, 0, 0, 0, 0 };
+    ssize_t n = tcp_exchange(fd, DOIP_PT_ROUTING_ACT_REQ, ok_req, sizeof(ok_req), resp, sizeof(resp));
+    TEST_ASSERT_EQUAL_INT(DOIP_HEADER_SIZE + 9, n);
+    const uint8_t *pl = resp + DOIP_HEADER_SIZE;
+    TEST_ASSERT_EQUAL_HEX8(0x0E, pl[0]);
+    TEST_ASSERT_EQUAL_HEX8(0x80, pl[1]);
+    TEST_ASSERT_EQUAL_HEX8(DOIP_ECU_LOGICAL_ADDRESS >> 8,   pl[2]);
+    TEST_ASSERT_EQUAL_HEX8(DOIP_ECU_LOGICAL_ADDRESS & 0xFF, pl[3]);
+    TEST_ASSERT_EQUAL_HEX8(0x10, pl[4]);
+
+    /* Different SA on the same, already-activated socket → 0x02 */
+    const uint8_t other_req[7] = { 0x0E, 0x81, 0x00, 0, 0, 0, 0 };
+    n = tcp_exchange(fd, DOIP_PT_ROUTING_ACT_REQ, other_req, sizeof(other_req), resp, sizeof(resp));
+    TEST_ASSERT_EQUAL_INT(DOIP_HEADER_SIZE + 9, n);
+    TEST_ASSERT_EQUAL_HEX8(0x02, resp[DOIP_HEADER_SIZE + 4]);
+    close(fd);
+
+    /* SA outside 0x0E00–0x0FFF → 0x00 (unknown source address) */
+    fd = raw_tcp_connect();
+    TEST_ASSERT_GREATER_THAN_INT(-1, fd);
+    const uint8_t bad_req[7] = { 0x12, 0x34, 0x00, 0, 0, 0, 0 };
+    n = tcp_exchange(fd, DOIP_PT_ROUTING_ACT_REQ, bad_req, sizeof(bad_req), resp, sizeof(resp));
+    TEST_ASSERT_EQUAL_INT(DOIP_HEADER_SIZE + 9, n);
+    TEST_ASSERT_EQUAL_HEX8(0x00, resp[DOIP_HEADER_SIZE + 4]);
+    close(fd);
+
+    /* Unsupported activation type → 0x06 */
+    fd = raw_tcp_connect();
+    TEST_ASSERT_GREATER_THAN_INT(-1, fd);
+    const uint8_t type_req[7] = { 0x0E, 0x00, 0x7F, 0, 0, 0, 0 };
+    n = tcp_exchange(fd, DOIP_PT_ROUTING_ACT_REQ, type_req, sizeof(type_req), resp, sizeof(resp));
+    TEST_ASSERT_EQUAL_INT(DOIP_HEADER_SIZE + 9, n);
+    TEST_ASSERT_EQUAL_HEX8(0x06, resp[DOIP_HEADER_SIZE + 4]);
+    close(fd);
+}
+
+/* ── Test 15: Diagnostic message to unknown target → NACK 0x03 ──────── */
+
+void test_diag_unknown_target_address_nack(void)
+{
+    uint8_t resp[64];
+    int fd = raw_tcp_connect();
+    TEST_ASSERT_GREATER_THAN_INT(-1, fd);
+    const uint8_t act[7] = { 0x0E, 0x00, 0x00, 0, 0, 0, 0 };
+    TEST_ASSERT_GREATER_THAN_INT(0, tcp_exchange(fd, DOIP_PT_ROUTING_ACT_REQ, act, sizeof(act),
+                                                 resp, sizeof(resp)));
+
+    /* SA=0x0E00, TA=0x2222 (not this ECU), UDS = TesterPresent */
+    const uint8_t diag[6] = { 0x0E, 0x00, 0x22, 0x22, 0x3E, 0x00 };
+    ssize_t n = tcp_exchange(fd, DOIP_PT_DIAGNOSTIC_MSG, diag, sizeof(diag), resp, sizeof(resp));
+    TEST_ASSERT_EQUAL_INT(DOIP_HEADER_SIZE + 5, n);
+    TEST_ASSERT_EQUAL_HEX8(0x80, resp[2]);
+    TEST_ASSERT_EQUAL_HEX8(0x03, resp[3]);                       /* PT 0x8003 */
+    TEST_ASSERT_EQUAL_HEX8(0x03, resp[DOIP_HEADER_SIZE + 4]);    /* unknown target address */
+    close(fd);
+}
+
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -540,6 +690,10 @@ int main(void)
     RUN_TEST(test_udp_entity_status_response);
     RUN_TEST(test_udp_power_mode_response);
     RUN_TEST(test_multiple_clients_independent_sessions);
+    RUN_TEST(test_udp_vehicle_id_response_layout);
+    RUN_TEST(test_udp_vehicle_id_filtered_requests);
+    RUN_TEST(test_routing_activation_wire_format_and_sa_range);
+    RUN_TEST(test_diag_unknown_target_address_nack);
 
     return UNITY_END();
 }

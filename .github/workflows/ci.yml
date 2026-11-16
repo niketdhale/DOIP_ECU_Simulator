@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        flags:
+          - ""
+          - "DOIP_2019=1"
+          - "DOIP_TLS=1 DOIP_IPV6=1 DOIP_ISOTP=1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install OpenSSL headers
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev
+      - name: Build simulator, client and library (warnings are errors)
+        run: make -j"$(nproc)" all lib ${{ matrix.flags }} CC="gcc -Werror"
+      - name: Unit + integration tests under ASan/UBSan
+        run: make test ${{ matrix.flags }} SANITIZE="-fsanitize=address,undefined -fno-sanitize-recover=undefined"

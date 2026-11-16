@@ -45,8 +45,8 @@ static void fill_announce(doip_vehicle_announce_t *a) {
     a->logical_address = htons(DOIP_ECU_LOGICAL_ADDRESS);
     memcpy(a->eid, g_identity.eid, DOIP_EID_LENGTH);
     memcpy(a->gid, g_identity.gid, DOIP_GID_LENGTH);
-    a->further_action  = htonl((uint32_t)g_identity.further_action);
-    a->vin_sync_status = htons((uint16_t)g_identity.vin_gw_sync_status);
+    a->further_action  = g_identity.further_action;
+    a->vin_sync_status = g_identity.vin_gw_sync_status;
 }
 
 /**
@@ -206,13 +206,25 @@ int doip_udp_poll(DoIP_RxIndication rx_cb) {
     if (rx_cb) rx_cb(hdr.payload_type,
                      rx_buf + DOIP_HEADER_SIZE, hdr.payload_length);
 
-    if (hdr.payload_type == DOIP_PT_VIN_REQ ||
-        hdr.payload_type == DOIP_PT_EID_REQ) {
-        /* VIN / EID Request — respond unicast to requester (ISO 13400-2 §7.2) */
-        LOG_DEBUG(DOIP_LOG_MODULE_UDP, "Handling VIN/EID Request");
+    const uint8_t *pl = rx_buf + DOIP_HEADER_SIZE;
+    /* Vehicle ID Request: plain, or filtered by EID / VIN — only answer
+     * a filtered request when the filter matches this entity. */
+    bool id_req =
+        hdr.payload_type == DOIP_PT_VIN_REQ ||
+        (hdr.payload_type == DOIP_PT_EID_REQ &&
+         hdr.payload_length == DOIP_EID_LENGTH &&
+         memcmp(pl, g_identity.eid, DOIP_EID_LENGTH) == 0) ||
+        (hdr.payload_type == DOIP_PT_VIN_REQ_WITH_VIN &&
+         hdr.payload_length == DOIP_VIN_LENGTH &&
+         memcmp(pl, g_identity.vin, DOIP_VIN_LENGTH) == 0);
+
+    if (id_req) {
+        /* Respond unicast to requester with a Vehicle ID Response (0x0004) */
+        LOG_DEBUG(DOIP_LOG_MODULE_UDP, "Handling Vehicle ID Request (PT=0x%04X)",
+                  hdr.payload_type);
         doip_vehicle_announce_t resp;
         fill_announce(&resp);
-        udp_send_to_addr(DOIP_PT_VIN_RES, &resp, sizeof(resp),
+        udp_send_to_addr(DOIP_PT_VEHICLE_ANNOUNCE, &resp, sizeof(resp),
                           &src_addr, src_len);
 
     } else if (hdr.payload_type == DOIP_PT_ENTITY_STATUS_REQ) {

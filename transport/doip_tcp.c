@@ -240,43 +240,40 @@ static int process_client_frame(doip_client_t *client)
         case DOIP_PT_ROUTING_ACT_REQ: {
             if (hdr.payload_length < sizeof(doip_routing_act_req_t)) goto frame_done;
             const doip_routing_act_req_t *req = (const doip_routing_act_req_t *)pl;
-            doip_logical_addr_t tester_addr;
-#if (DOIP_LOGICAL_ADDR_SIZE == 2)
-            tester_addr = ntohs(req->tester_logical_address);
-#else
-            tester_addr = ntohl(req->tester_logical_address);
-#endif
+            doip_logical_addr_t tester_addr = ntohs(req->tester_logical_address);
             uint8_t act_type = req->activation_type;
             LOG_DEBUG(DOIP_LOG_MODULE_TCP,
                       "Routing Act Req (fd=%d): Tester=0x%04X, Type=0x%02X",
                       client->fd, tester_addr, act_type);
 
+            /* Re-activation with the same SA on an active socket succeeds again. */
             uint8_t resp_code = DOIP_ACT_SUCCESS;
-            if (client->state == DOIP_TCP_STATE_ACTIVATED)
-                resp_code = DOIP_ACT_ALREADY_ACTIVE;
+            if (tester_addr < DOIP_TESTER_ADDR_MIN || tester_addr > DOIP_TESTER_ADDR_MAX)
+                resp_code = DOIP_ACT_UNKNOWN_SA;
+            else if (client->state == DOIP_TCP_STATE_ACTIVATED &&
+                     tester_addr != client->tester_logical_addr)
+                resp_code = DOIP_ACT_SA_MISMATCH;
             else if (act_type != 0x00 && act_type != 0x01)
-                resp_code = DOIP_ACT_REJECTED_UNKNOWN;
+                resp_code = DOIP_ACT_UNSUPPORTED_TYPE;
 
             doip_routing_act_res_t res; memset(&res, 0, sizeof(res));
-#if (DOIP_LOGICAL_ADDR_SIZE == 2)
+            res.tester_logical_address = req->tester_logical_address;
             res.ecu_logical_address    = htons(DOIP_ECU_LOGICAL_ADDRESS);
-            res.tester_logical_address = req->tester_logical_address;
-#else
-            res.ecu_logical_address    = htonl(DOIP_ECU_LOGICAL_ADDRESS);
-            res.tester_logical_address = req->tester_logical_address;
-#endif
             res.activation_code = resp_code;
             if (client_send_frame(client, DOIP_PT_ROUTING_ACT_RES,
-                                   &res, sizeof(res)) < 0) {
+                                   &res, sizeof(res)) < 0 ||
+                resp_code != DOIP_ACT_SUCCESS) {
+                /* ISO 13400-2: a denied activation closes the socket */
+                LOG_WARN(DOIP_LOG_MODULE_TCP,
+                         "Routing Activation denied (fd=%d, code=0x%02X)",
+                         client->fd, resp_code);
                 client->rx_bytes = 0;
                 return -1;
             }
-            if (resp_code == DOIP_ACT_SUCCESS) {
-                client->state              = DOIP_TCP_STATE_ACTIVATED;
-                client->tester_logical_addr = tester_addr;
-                LOG_INFO(DOIP_LOG_MODULE_TCP,
-                         "Routing Activated for client fd=%d", client->fd);
-            }
+            client->state               = DOIP_TCP_STATE_ACTIVATED;
+            client->tester_logical_addr = tester_addr;
+            LOG_INFO(DOIP_LOG_MODULE_TCP,
+                     "Routing Activated for client fd=%d", client->fd);
             break;
         }
 
@@ -284,12 +281,20 @@ static int process_client_frame(doip_client_t *client)
             if (hdr.payload_length < 4) break;
             uint16_t tester_addr = get_be16(pl);
 
+            uint16_t target_addr = get_be16(pl + 2);
+            uint8_t  nack_code   = 0;
+
             if (client->state != DOIP_TCP_STATE_ACTIVATED ||
-                tester_addr != (uint16_t)client->tester_logical_addr) {
+                tester_addr != client->tester_logical_addr)
+                nack_code = DOIP_DIAG_NACK_INVALID_SA;
+            else if (target_addr != DOIP_ECU_LOGICAL_ADDRESS)
+                nack_code = DOIP_DIAG_NACK_UNKNOWN_TA;
+
+            if (nack_code) {
                 uint8_t nack[5];
-                put_be16(&nack[0], DOIP_ECU_LOGICAL_ADDRESS);
+                put_be16(&nack[0], target_addr);
                 put_be16(&nack[2], tester_addr);
-                nack[4] = DOIP_DIAG_NACK_INVALID_SA;
+                nack[4] = nack_code;
                 LOG_WARN(DOIP_LOG_MODULE_TCP,
                          "Diagnostic Req rejected (fd=%d, code=0x%02X)",
                          client->fd, nack[4]);

@@ -418,7 +418,7 @@ All compile-time configuration lives in the `config/` headers.
 
 ```c
 /* Protocol version */
-#define DOIP_PROTOCOL_VERSION_SELECTED  DOIP_VERSION_2012   // or DOIP_VERSION_2019
+#define DOIP_PROTOCOL_VERSION_SELECTED  DOIP_VERSION_2012   // or DOIP_VERSION_2019 (make DOIP_2019=1)
 
 /* Addressing */
 #define DOIP_ECU_LOGICAL_ADDRESS        0x1003U
@@ -669,7 +669,40 @@ All UDP request/response exchanges (VIN, Entity Status, Power Mode) are sent **u
 | Condition | NACK code |
 |-----------|-----------|
 | Invalid sync pattern | `0x00` INVALID_PATTERN |
-| Unknown payload type | `0x02` UNKNOWN_PAYLOAD_TYPE |
+| Unknown payload type | `0x01` UNKNOWN_PAYLOAD_TYPE |
+
+### Vehicle identification (UDP)
+
+| Payload type | Meaning | Behaviour |
+|--------------|---------|-----------|
+| `0x0001` | Vehicle ID request | Always answered |
+| `0x0002` | Vehicle ID request with EID (6 bytes) | Answered only if the EID matches |
+| `0x0003` | Vehicle ID request with VIN (17 bytes) | Answered only if the VIN matches |
+| `0x0004` | Vehicle announcement / ID response | 33 bytes: VIN(17) LA(2) EID(6) GID(6) further-action(1) sync-status(1) |
+
+Requests using the default protocol version `0xFF`/`0x00` are accepted for these three request types.
+
+### Routing activation
+
+The response is 9 bytes: tester address(2), entity address(2), code(1), reserved(4). A denied activation closes the socket.
+
+| Condition | Response code |
+|-----------|---------------|
+| Source address outside `0x0E00`–`0x0FFF` | `0x00` unknown source address |
+| Different source address on an already-activated socket | `0x02` |
+| Activation type other than `0x00` / `0x01` | `0x06` unsupported activation type |
+| Otherwise (including re-activation with the same address) | `0x10` success |
+
+### Diagnostic message NACK (PT 0x8003)
+
+| Condition | NACK code |
+|-----------|-----------|
+| Routing not activated, or source address differs from the activated one | `0x02` invalid source address |
+| Target address is not `DOIP_ECU_LOGICAL_ADDRESS` | `0x03` unknown target address |
+
+### Protocol version
+
+`DOIP_VERSION_2012` sends header version `0x02`/`0xFD`; `DOIP_VERSION_2019` (or `make DOIP_2019=1`) sends `0x03`/`0xFC`. Logical addresses are 16-bit in both.
 
 ### Alive Check Timeline
 
