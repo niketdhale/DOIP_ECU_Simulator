@@ -74,6 +74,7 @@ static int process(UdsClientContext_t *ctx, const uint8_t *req, uint16_t req_len
 void setUp(void)
 {
     mock_fsm_reset();
+    memset(&s_ecu, 0, sizeof(s_ecu));          /* also empties the registered-DID table */
     memset(&s_test_identity, 0, sizeof(s_test_identity));
     memcpy(s_test_identity.vin,              TEST_VIN,    DOIP_VIN_LENGTH);
     strncpy(s_test_identity.software_version, TEST_SW,   sizeof(s_test_identity.software_version) - 1);
@@ -581,6 +582,83 @@ void test_functional_addressing_suppression_rule(void)
     TEST_ASSERT_FALSE(doip_uds_functional_suppresses(NULL, 3));
 }
 
+/* ── Registered DIDs (DoIP_SetDid) ────────────────────────────────── */
+
+void test_registered_did_is_readable_alone_and_with_others(void)
+{
+    UdsClientContext_t ctx = make_ctx();
+    const uint8_t part[] = { 0x01, 0x02, 0xAB };
+    TEST_ASSERT_EQUAL_INT(0, doip_uds_set_did(&s_ecu, 0xF187, part, sizeof(part), false));
+
+    uint8_t one[] = { UDS_SID_READ_DATA_BY_ID, 0xF1, 0x87 };
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, one, sizeof(one)));
+    const uint8_t expect_one[] = { 0x62, 0xF1, 0x87, 0x01, 0x02, 0xAB };
+    TEST_ASSERT_EQUAL_UINT16(sizeof(expect_one), s_rlen);
+    TEST_ASSERT_EQUAL_MEMORY(expect_one, s_resp, sizeof(expect_one));
+
+    uint8_t two[] = { UDS_SID_READ_DATA_BY_ID, 0xF1, 0x87, 0xF1, 0x90 };
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, two, sizeof(two)));
+    TEST_ASSERT_EQUAL_UINT16(6 + 2 + DOIP_VIN_LENGTH, s_rlen);
+    TEST_ASSERT_EQUAL_MEMORY(TEST_VIN, &s_resp[8], DOIP_VIN_LENGTH);
+
+    /* Registering it again replaces the value */
+    TEST_ASSERT_EQUAL_INT(0, doip_uds_set_did(&s_ecu, 0xF187, "NEW", 3, false));
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, one, sizeof(one)));
+    TEST_ASSERT_EQUAL_UINT16(6, s_rlen);
+    TEST_ASSERT_EQUAL_MEMORY("NEW", &s_resp[3], 3);
+    TEST_ASSERT_EQUAL_UINT8(1, s_ecu.did_count);
+}
+
+void test_registered_did_write_rules(void)
+{
+    UdsClientContext_t ctx = make_extended_ctx();
+    TEST_ASSERT_EQUAL_INT(0, doip_uds_set_did(&s_ecu, 0x1000, "fixed", 5, false));
+    TEST_ASSERT_EQUAL_INT(0, doip_uds_set_did(&s_ecu, 0x2000, "old", 3, true));
+
+    uint8_t wr_fixed[] = { UDS_SID_WRITE_DATA_BY_ID, 0x10, 0x00, 'X' };
+    expect_write_nrc(&ctx, wr_fixed, sizeof(wr_fixed), UDS_NRC_REQUEST_OUT_OF_RANGE);
+
+    /* A writable DID takes any length up to the maximum, exactly */
+    uint8_t wr_max[3 + UDS_DID_DATA_MAX] = { UDS_SID_WRITE_DATA_BY_ID, 0x20, 0x00 };
+    memset(&wr_max[3], 'Z', UDS_DID_DATA_MAX);
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, wr_max, sizeof(wr_max)));
+    uint8_t rd[] = { UDS_SID_READ_DATA_BY_ID, 0x20, 0x00 };
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, rd, sizeof(rd)));
+    TEST_ASSERT_EQUAL_UINT16(3 + UDS_DID_DATA_MAX, s_rlen);
+    TEST_ASSERT_EACH_EQUAL_HEX8('Z', &s_resp[3], UDS_DID_DATA_MAX);
+
+    uint8_t wr_long[3 + UDS_DID_DATA_MAX + 1] = { UDS_SID_WRITE_DATA_BY_ID, 0x20, 0x00 };
+    expect_write_nrc(&ctx, wr_long, sizeof(wr_long), UDS_NRC_INCORRECT_MESSAGE_LENGTH);
+
+    uint8_t wr_short[] = { UDS_SID_WRITE_DATA_BY_ID, 0x20, 0x00, 'a', 'b' };
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, wr_short, sizeof(wr_short)));
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, rd, sizeof(rd)));
+    TEST_ASSERT_EQUAL_UINT16(3 + 2, s_rlen);
+    TEST_ASSERT_EQUAL_MEMORY("ab", &s_resp[3], 2);
+}
+
+void test_set_did_rejects_bad_input_and_a_full_table(void)
+{
+    uint8_t big[UDS_DID_DATA_MAX + 1] = { 0 };
+    TEST_ASSERT_EQUAL_INT(-1, doip_uds_set_did(NULL,   0x1000, "x", 1, false));
+    TEST_ASSERT_EQUAL_INT(-1, doip_uds_set_did(&s_ecu, 0x1000, NULL, 1, false));
+    TEST_ASSERT_EQUAL_INT(-1, doip_uds_set_did(&s_ecu, 0x1000, "x", 0, false));
+    TEST_ASSERT_EQUAL_INT(-1, doip_uds_set_did(&s_ecu, 0x1000, big, sizeof(big), false));
+    TEST_ASSERT_EQUAL_INT(-1, doip_uds_set_did(&s_ecu, UDS_DID_VIN_NUMBER, "x", 1, true));   /* identity DID */
+
+    for (uint16_t i = 0; i < UDS_DID_TABLE_SIZE; i++)
+        TEST_ASSERT_EQUAL_INT(0, doip_uds_set_did(&s_ecu, (uint16_t)(0x3000 + i), big, UDS_DID_DATA_MAX, false));
+    TEST_ASSERT_EQUAL_INT(-1, doip_uds_set_did(&s_ecu, 0x4000, "x", 1, false));              /* table full   */
+    TEST_ASSERT_EQUAL_INT(0,  doip_uds_set_did(&s_ecu, 0x3000, "x", 1, false));              /* replace is fine */
+
+    /* Reading every registered DID at once stays inside the response buffer */
+    UdsClientContext_t ctx = make_ctx();
+    uint8_t all[1 + 2 * UDS_DID_TABLE_SIZE] = { UDS_SID_READ_DATA_BY_ID };
+    for (uint16_t i = 0; i < UDS_DID_TABLE_SIZE; i++) { all[1 + 2 * i] = 0x30; all[2 + 2 * i] = (uint8_t)i; }
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, all, sizeof(all)));
+    TEST_ASSERT_EQUAL_UINT16(1 + (2 + 1) + (UDS_DID_TABLE_SIZE - 1) * (2 + UDS_DID_DATA_MAX), s_rlen);
+}
+
 /* ── ECU Reset details ────────────────────────────────────────────── */
 
 void test_ecu_reset_returns_to_default_session(void)
@@ -764,6 +842,9 @@ int main(void)
     RUN_TEST(test_dtc_clear_single_and_all);
     RUN_TEST(test_dtc_negative_responses);
     RUN_TEST(test_functional_addressing_suppression_rule);
+    RUN_TEST(test_registered_did_is_readable_alone_and_with_others);
+    RUN_TEST(test_registered_did_write_rules);
+    RUN_TEST(test_set_did_rejects_bad_input_and_a_full_table);
     RUN_TEST(test_ecu_reset_returns_to_default_session);
     RUN_TEST(test_ecu_reset_invalid_requests);
     RUN_TEST(test_read_multiple_dids);

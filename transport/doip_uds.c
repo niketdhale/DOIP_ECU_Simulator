@@ -53,16 +53,50 @@ static int handle_session_control(UdsClientContext_t *ctx, const uint8_t *req, u
     return 0;
 }
 
-/* Look up a readable DID; returns its data length or -1 if unsupported. */
-static int did_read(const DoIP_EcuIdentity_t *id, uint16_t did, const char **data) {
+/* Find a DID registered with DoIP_SetDid() (NULL if absent). */
+static uds_did_entry_t *did_find(DoIP_Handle_t *ecu, uint16_t did) {
+    for (uint8_t i = 0; i < ecu->did_count; i++)
+        if (ecu->dids[i].did == did) return &ecu->dids[i];
+    return NULL;
+}
+
+/* Look up a readable DID - the identity DIDs first, then the registered ones.
+ * Returns its data length, or -1 if unsupported. */
+static int did_read(DoIP_Handle_t *ecu, uint16_t did, const uint8_t **data) {
+    const DoIP_EcuIdentity_t *id = &ecu->identity;
+    const char *text;
     switch (did) {
-        case UDS_DID_VIN_NUMBER:        *data = id->vin;              return DOIP_VIN_LENGTH;
-        case UDS_DID_SYSTEM_NAME:       *data = id->system_name;      break;
-        case UDS_DID_SOFTWARE_VERSION:  *data = id->software_version; break;
-        case UDS_DID_ECU_SERIAL_NUMBER: *data = id->serial_number;    break;
-        default: return -1;
+        case UDS_DID_VIN_NUMBER:        *data = (const uint8_t *)id->vin; return DOIP_VIN_LENGTH;
+        case UDS_DID_SYSTEM_NAME:       text = id->system_name;      break;
+        case UDS_DID_SOFTWARE_VERSION:  text = id->software_version; break;
+        case UDS_DID_ECU_SERIAL_NUMBER: text = id->serial_number;    break;
+        default: {
+            const uds_did_entry_t *entry = did_find(ecu, did);
+            if (!entry) return -1;
+            *data = entry->data;
+            return entry->len;
+        }
     }
-    return (int)strlen(*data);
+    *data = (const uint8_t *)text;
+    return (int)strlen(text);
+}
+
+int doip_uds_set_did(DoIP_Handle_t *ecu, uint16_t did, const void *data, uint16_t len, bool writable) {
+    if (!ecu || !data || len == 0 || len > UDS_DID_DATA_MAX) return -1;
+    if (did == UDS_DID_VIN_NUMBER || did == UDS_DID_SYSTEM_NAME ||
+        did == UDS_DID_SOFTWARE_VERSION || did == UDS_DID_ECU_SERIAL_NUMBER)
+        return -1;                          /* these come from DoIP_EcuIdentity_t */
+
+    uds_did_entry_t *entry = did_find(ecu, did);
+    if (!entry) {
+        if (ecu->did_count >= UDS_DID_TABLE_SIZE) return -1;
+        entry = &ecu->dids[ecu->did_count++];
+        entry->did = did;
+    }
+    memcpy(entry->data, data, len);
+    entry->len      = (uint8_t)len;
+    entry->writable = writable;
+    return 0;
 }
 
 /* 0x22: one or more DIDs per request. Unsupported DIDs are skipped; the
@@ -75,8 +109,8 @@ static int handle_read_data_by_id(UdsClientContext_t *ctx, const uint8_t *req, u
     res[0] = UDS_SID_READ_DATA_BY_ID_RES;
     for (uint16_t i = 1; i < req_len; i += 2) {
         uint16_t did = (uint16_t)((req[i] << 8) | req[i + 1]);
-        const char *data = NULL;
-        int n = did_read(&ctx->ecu->identity, did, &data);
+        const uint8_t *data = NULL;
+        int n = did_read(ctx->ecu, did, &data);
         LOG_DEBUG(DOIP_LOG_MODULE_UDS, "Read DID: 0x%04X%s", did, n < 0 ? " (unsupported)" : "");
         if (n < 0) continue;
         if (out + 2U + (unsigned)n > UDS_MAX_RESPONSE_LEN)
@@ -91,8 +125,9 @@ static int handle_read_data_by_id(UdsClientContext_t *ctx, const uint8_t *req, u
     return 0;
 }
 
-/* DIDs writable through 0x2E, backed by the instance's identity (which UDP
- * vehicle announcements also read, so a written VIN is announced too). */
+/* DIDs writable through 0x2E: identity fields (which UDP vehicle announcements
+ * also read, so a written VIN is announced too) and registered DIDs marked
+ * writable. */
 static int handle_write_data_by_id(UdsClientContext_t *ctx, const uint8_t *req, uint16_t req_len, uint8_t *res, uint16_t *res_len) {
     DoIP_EcuIdentity_t *id = &ctx->ecu->identity;
     uint8_t nrc = 0;
@@ -107,6 +142,9 @@ static int handle_write_data_by_id(UdsClientContext_t *ctx, const uint8_t *req, 
         case UDS_DID_ECU_SERIAL_NUMBER: dst = id->serial_number; max = sizeof(id->serial_number) - 1; break;
         default: break;
     }
+    uds_did_entry_t *entry = dst ? NULL : did_find(ctx->ecu, did);
+    if (entry && entry->writable) { dst = (char *)entry->data; max = UDS_DID_DATA_MAX; }
+    else                          entry = NULL;
 
     if (req_len < 4)                                            nrc = UDS_NRC_INCORRECT_MESSAGE_LENGTH;
     else if (!dst)                                              nrc = UDS_NRC_REQUEST_OUT_OF_RANGE;
@@ -116,7 +154,8 @@ static int handle_write_data_by_id(UdsClientContext_t *ctx, const uint8_t *req, 
         res[0] = 0x7F; res[1] = UDS_SID_WRITE_DATA_BY_ID; res[2] = nrc; *res_len = 3; return -1;
     }
     memcpy(dst, &req[3], n);
-    dst[n] = '\0';
+    if (entry) entry->len = (uint8_t)n;    /* registered DID: explicit length    */
+    else       dst[n] = '\0';              /* identity strings are NUL-terminated */
     LOG_INFO(DOIP_LOG_MODULE_UDS, "Write DID 0x%04X (%u bytes)", did, (unsigned)n);
     res[0] = UDS_SID_WRITE_DATA_BY_ID_RES; res[1] = req[1]; res[2] = req[2]; *res_len = 3;
     return 0;

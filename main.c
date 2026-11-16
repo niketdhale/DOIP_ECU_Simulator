@@ -4,6 +4,8 @@
 #include <unistd.h>
 #include <string.h>
 #include <getopt.h>
+#include <ctype.h>
+#include <stdbool.h>
 #include "doip_api.h"
 #include "config/doip_uds_config.h"
 
@@ -48,6 +50,9 @@ static void usage(const char *prog) {
            "  --address <addr>      ECU logical address, e.g. 0x1003\n"
            "  --functional-address <addr>  Functional group address (default 0x%04X)\n"
            "  --port <port>         UDP + TCP port (default %u)\n"
+           "  --did <DID>=<value>   Extra data identifier for 0x22, e.g. F187=PN-1234 or\n"
+           "                        F1A0=0x0102AB (hex bytes). Repeatable.\n"
+           "  --did-rw <DID>=<value>  The same, and writable with 0x2E\n"
            "  --log-level <1-4>     1=WARN 2=INFO 3=DEBUG 4=VERBOSE (default 3)\n"
            "  --log-file <path>     Also write the log to a file\n"
            "Fault injection:\n"
@@ -64,6 +69,29 @@ static void usage(const char *prog) {
 #endif
            "  --help                Show this help\n",
            prog, (unsigned)DOIP_FUNCTIONAL_LOGICAL_ADDRESS, (unsigned)DOIP_TCP_PORT);
+}
+
+/* --did / --did-rw argument: <hex DID>=<text>  or  <hex DID>=0x<hex bytes> */
+static bool add_did(DoIP_Handle_t *handle, const char *arg, bool writable) {
+    char *eq = NULL;
+    unsigned long did = strtoul(arg, &eq, 16);
+    if (eq == arg || *eq != '=' || did > 0xFFFF) return false;
+
+    const char *value = eq + 1;
+    size_t      len   = strlen(value);
+    if (len < 2 || value[0] != '0' || (value[1] != 'x' && value[1] != 'X'))
+        return len <= UDS_DID_DATA_MAX &&
+               DoIP_SetDid(handle, (uint16_t)did, value, (uint16_t)len, writable) == 0;
+
+    uint8_t bytes[UDS_DID_DATA_MAX];
+    value += 2; len -= 2;
+    if (len == 0 || len % 2 != 0 || len / 2 > sizeof(bytes)) return false;
+    for (size_t i = 0; i < len; i += 2) {
+        if (!isxdigit((unsigned char)value[i]) || !isxdigit((unsigned char)value[i + 1])) return false;
+        const char pair[3] = { value[i], value[i + 1], '\0' };
+        bytes[i / 2] = (uint8_t)strtoul(pair, NULL, 16);
+    }
+    return DoIP_SetDid(handle, (uint16_t)did, bytes, (uint16_t)(len / 2), writable) == 0;
 }
 
 /* Parse an unsigned number (decimal or 0x hex) in [1, max]; exits on bad input. */
@@ -119,6 +147,8 @@ int main(int argc, char *argv[]) {
         { "port",      required_argument, NULL, 'p' },
         { "log-level", required_argument, NULL, 'l' },
         { "log-file",  required_argument, NULL, 'f' },
+        { "did",            required_argument, NULL, 'D' },
+        { "did-rw",         required_argument, NULL, 'W' },
         { "response-delay", required_argument, NULL, 'd' },
         { "drop-ack",       no_argument,       NULL, 'A' },
         { "drop-response",  no_argument,       NULL, 'R' },
@@ -149,6 +179,16 @@ int main(int argc, char *argv[]) {
             case 'p': config.port            = (uint16_t)parse_num("port", optarg, 65535);     break;
             case 'l': config.log_level       = (uint8_t)parse_num("log-level", optarg, 4);     break;
             case 'f': config.log_file_path   = optarg; break;
+            case 'D':
+            case 'W':
+                if (!add_did(handle, optarg, opt == 'W')) {
+                    fprintf(stderr, "Invalid --did%s '%s': expected <hex DID>=<text> or <hex DID>=0x<hex bytes>, "
+                                    "1..%d bytes, at most %d DIDs, not an identity DID\n",
+                            opt == 'W' ? "-rw" : "", optarg, UDS_DID_DATA_MAX, UDS_DID_TABLE_SIZE);
+                    DoIP_Destroy(handle);
+                    return EXIT_FAILURE;
+                }
+                break;
             case 'd': config.faults.response_delay_ms = (uint32_t)parse_num("response-delay", optarg, 600000); break;
             case 'A': config.faults.drop_diag_ack     = true; break;
             case 'R': config.faults.drop_response     = true; break;

@@ -46,6 +46,8 @@ struct DoIP_Context {
 
     /* ----- transport/doip_uds.c ----- */
     unsigned           rng;             /* rand_r() state for Security Access seeds            */
+    uds_did_entry_t    dids[UDS_DID_TABLE_SIZE];   /* DoIP_SetDid(); survives DeInit/Init      */
+    uint8_t            did_count;
 #if UDS_SUPPORT_DTC
     uds_dtc_t          dtcs[UDS_DTC_COUNT];
 #endif

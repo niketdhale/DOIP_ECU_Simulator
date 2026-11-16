@@ -54,9 +54,9 @@ All four transport extensions are **disabled by default** and have zero impact o
 - `0x11` ECU Reset — reset types `0x01`–`0x03`; returns the client to the default session
 - `0x14` Clear Diagnostic Information — `FFFFFF` clears all DTCs, or one specific DTC
 - `0x19` Read DTC Information — `01` count by status mask, `02` list by status mask, `0A` all supported; DTC table in `UDS_DTC_TABLE`
-- `0x22` Read Data By Identifier (VIN, SW Version, System Name, Serial Number) — several DIDs per request
+- `0x22` Read Data By Identifier (VIN, SW Version, System Name, Serial Number, plus any DIDs registered with `DoIP_SetDid()` / `--did`) — several DIDs per request
 - `0x27` Security Access level 1 — `27 01` returns a 4-byte seed, `27 02` expects `seed XOR UDS_SECURITY_KEY_MASK`; three wrong keys lock the client out for `UDS_SECURITY_LOCKOUT_MS`
-- `0x2E` Write Data By Identifier — VIN (`0xF190`, exactly 17 bytes), system name (`0xF186`), serial number (`0xF18C`). A written VIN is also used in UDP vehicle announcements and ID responses
+- `0x2E` Write Data By Identifier — VIN (`0xF190`, exactly 17 bytes), system name (`0xF186`), serial number (`0xF18C`). A written VIN is also used in UDP vehicle announcements and ID responses. Registered DIDs marked writable (`--did-rw`) are accepted too
 - `0x31` Routine Control
 - `0x3E` Tester Present
 - Suppress-positive-response bit (`0x80` in the sub-function byte) honoured for sub-function services: the service runs, the DoIP ACK is sent, and no positive UDS response follows (e.g. `3E 80`); negative responses are still sent
@@ -285,11 +285,11 @@ make test-tsan
 | Suite | Target | Tests |
 |-------|--------|-------|
 | Frame unit tests | `make test` | 10 |
-| UDS unit tests | `make test` | 36 |
+| UDS unit tests | `make test` | 39 |
 | ISO-TP unit tests | `make test` | 14 |
 | Server integration tests (in-process server, port 23400) | `make test` | 27 |
 | Two instances in one process (ports 23410 / 23411); also `make test-tsan` | `make test` | 6 |
-| End-to-end tests of the binary (port 24400) | `make test` | 10 |
+| End-to-end tests of the binary (port 24400) | `make test` | 12 |
 | Alive-check timing tests | `make test-alive` | 3 |
 | ISO-TP server integration tests | `make test-features` | 5 |
 | TLS server integration tests | `make test-features` | 6 |
@@ -332,6 +332,8 @@ When a sanitizer aborts, the built-in mutator saves the input as `crash-<target>
 # Override identity / addressing without recompiling:
 ./doip_ecu_sim --vin WAUZZZ8V0JA000001 --address 0x2002 --functional-address 0xE401 \
                --port 14400 --log-level 2
+# Extra data identifiers: text, or hex bytes with 0x; --did-rw makes one writable
+./doip_ecu_sim --did F187=PN-1234 --did-rw F1A0=0x0102AB
 ./doip_ecu_sim --help
 
 # With TLS:
@@ -374,7 +376,11 @@ void           DoIP_Destroy(DoIP_Handle_t *handle);
 void           DoIP_SetLogLevel(DoIP_Handle_t *handle, uint8_t level);
 void           DoIP_EnablePeriodicAnnounce(DoIP_Handle_t *handle, bool enable);
 int            DoIP_SetFaults(DoIP_Handle_t *handle, const DoIP_FaultConfig_t *faults);  // NULL clears
+int            DoIP_SetDid(DoIP_Handle_t *handle, uint16_t did,
+                           const void *data, uint16_t len, bool writable);
 ```
+
+`DoIP_SetDid()` registers an extra data identifier for ReadDataByIdentifier without writing a hook: up to `UDS_DID_TABLE_SIZE` (16) DIDs of up to `UDS_DID_DATA_MAX` (64) bytes per instance, optionally writable with `0x2E`. For anything dynamic (live values, larger data) use the `on_uds_request` hook.
 
 ### Several ECUs in one process
 

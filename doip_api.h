@@ -246,6 +246,30 @@ DOIP_API void DoIP_SetLogLevel(DoIP_Handle_t *handle, uint8_t level);
 DOIP_API void DoIP_EnablePeriodicAnnounce(DoIP_Handle_t *handle, bool enable);
 
 /**
+ * @brief Add or replace a data identifier answered by ReadDataByIdentifier (0x22).
+ *
+ * Lets the ECU serve extra DIDs without an on_uds_request hook. The data is
+ * copied. Up to UDS_DID_TABLE_SIZE DIDs of up to UDS_DID_DATA_MAX bytes each;
+ * they belong to the handle and survive DoIP_DeInit(). May be called before
+ * or after DoIP_Init().
+ *
+ * The identity DIDs 0xF190 (VIN), 0xF186, 0xF182 and 0xF18C cannot be
+ * registered here: they come from DoIP_Config_t::ecu_identity.
+ *
+ * @param[in,out] handle    Handle returned by DoIP_Create().
+ * @param[in]     did       Data identifier.
+ * @param[in]     data      Value (1 .. UDS_DID_DATA_MAX bytes).
+ * @param[in]     len       Length of @p data.
+ * @param[in]     writable  Also accept WriteDataByIdentifier (0x2E) for this DID,
+ *                          under the same session and security conditions as
+ *                          the built-in writable DIDs.
+ * @retval  0  Registered.
+ * @retval -1  Invalid argument, identity DID, or table full.
+ */
+DOIP_API int DoIP_SetDid(DoIP_Handle_t *handle, uint16_t did,
+                         const void *data, uint16_t len, bool writable);
+
+/**
  * @brief Change fault injection while the simulator is running.
  *
  * @param[in,out] handle  Initialised handle.

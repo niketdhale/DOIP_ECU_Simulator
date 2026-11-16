@@ -152,6 +152,14 @@ int DoIP_SetFaults(DoIP_Handle_t *handle, const DoIP_FaultConfig_t *faults) {
     return ret;
 }
 
+int DoIP_SetDid(DoIP_Handle_t *handle, uint16_t did, const void *data, uint16_t len, bool writable) {
+    if (!handle) return -1;
+    pthread_mutex_lock(&handle->lock);
+    int ret = doip_uds_set_did(handle, did, data, len, writable);
+    pthread_mutex_unlock(&handle->lock);
+    return ret;
+}
+
 void DoIP_Tick(DoIP_Handle_t *handle) {
     if (!handle || !handle->is_initialized) return;
     pthread_mutex_lock(&handle->lock);

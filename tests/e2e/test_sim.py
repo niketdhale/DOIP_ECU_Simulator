@@ -231,6 +231,24 @@ class DiagnosticsTest(SimTestCase):
         self.assertEqual(t.activate(), 0x00)
 
 
+class ExtraDidTest(SimTestCase):
+    EXTRA_ARGS = ["--did", "F187=PART-NO-0042", "--did-rw", "2000=0x0A0B0C"]
+
+    def test_registered_dids_from_the_command_line(self):
+        t = self.connect()
+        self.assertEqual(t.uds([0x22, 0xF1, 0x87]), b"\x62\xF1\x87PART-NO-0042")
+        self.assertEqual(t.uds([0x22, 0x20, 0x00]), b"\x62\x20\x00\x0A\x0B\x0C")
+        t.unlock()
+        self.assertEqual(t.uds(b"\x2E\xF1\x87X"), b"\x7F\x2E\x31")          # read-only
+        self.assertEqual(t.uds(b"\x2E\x20\x00\xFF\xEE"), b"\x6E\x20\x00")
+        self.assertEqual(t.uds([0x22, 0x20, 0x00]), b"\x62\x20\x00\xFF\xEE")
+
+    def test_bad_did_arguments_are_rejected(self):
+        for value in ("F187", "F187=", "XYZ=1", "F190=NOTALLOWED", "2000=0x0A0", "2000=0xZZ", "12345=1"):
+            result = subprocess.run([BINARY, "--did", value], capture_output=True, timeout=5)
+            self.assertNotEqual(result.returncode, 0, value)
+
+
 class ResponseDelayTest(SimTestCase):
     EXTRA_ARGS = ["--response-delay", "300"]
 

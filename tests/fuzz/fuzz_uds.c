@@ -29,6 +29,9 @@ const struct fuzz_seed fuzz_seeds[] = {
               VIN_DID, VIN_DID, VIN_DID),
     /* three wrong keys -> lockout, then a seed request during the lockout */
     FUZZ_SEED(0x01, SEED_KEY, SEED_KEY, SEED_KEY, 0x00,0x02, 0x27,0x01),
+    /* registered DIDs: read both, then overwrite the writable one */
+    FUZZ_SEED(0x03, 0x00,0x05, 0x22,0xF1,0x87,0x20,0x00, 0x00,0x08, 0x2E,0x20,0x00,'n','e','w','e','r',
+              0x00,0x03, 0x22,0x20,0x00),
     FUZZ_SEED(0x00, 0x00,0x02, 0x10,0x03, 0x00,0x02, 0x27,0x01, 0x00,0x06, 0x27,0x02,0x00,0x00,0x00,0x00),
     FUZZ_SEED(0x00, 0x00,0x03, 0x22,0xF1,0x90, 0x00,0x07, 0x22,0xF1,0x90,0xF1,0x8C,0xF1,0x86),
     FUZZ_SEED(0x03, 0x00,0x14, 0x2E,0xF1,0x90, 'F','U','Z','Z','V','I','N','0','0','0','0','0','0','0','0','0','1'),
@@ -47,8 +50,11 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     };
     static struct DoIP_Context ecu;            /* only its UDS-related parts are used */
     DoIP_Log_Init(0, 0, NULL);                 /* silent */
-    ecu.identity = identity;                   /* fresh identity and DTC memory per input */
+    memset(&ecu, 0, sizeof(ecu));
+    ecu.identity = identity;                   /* fresh identity, DTC memory and DIDs per input */
     doip_uds_init(&ecu);
+    doip_uds_set_did(&ecu, 0xF187, "PART-0001", 9, false);
+    doip_uds_set_did(&ecu, 0x2000, "rw", 2, true);
     if (size == 0) return 0;
 
     UdsClientContext_t ctx;

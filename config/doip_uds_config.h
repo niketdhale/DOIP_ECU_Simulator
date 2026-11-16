@@ -92,6 +92,10 @@
 #define UDS_DID_SOFTWARE_VERSION        0xF182
 #define UDS_DID_ECU_SERIAL_NUMBER       0xF18C
 
+/* Data identifiers registered at runtime with DoIP_SetDid(), per instance */
+#define UDS_DID_TABLE_SIZE              16      /* Max registered DIDs          */
+#define UDS_DID_DATA_MAX                64      /* Max data bytes per DID       */
+
 /* ===== Feature Toggles ===== */
 #define UDS_SUPPORT_SESSION_CONTROL     true
 #define UDS_SUPPORT_ECU_RESET           true
