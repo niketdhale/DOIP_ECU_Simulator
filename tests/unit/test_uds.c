@@ -2,16 +2,17 @@
  * @file test_uds.c
  * @brief Unit tests for transport/doip_uds.c — UDS request processing.
  *
- * No sockets opened. Calls doip_uds_init() + doip_uds_process_request()
+ * No sockets opened. Calls uds_init() + doip_uds_process_request()
  * directly with in-memory buffers. FSM callbacks are provided by
  * tests/mocks/mock_fsm.c.
  *
- * Links: unity.c  doip_uds.c  mock_fsm.c  doip_log.c  doip_det.c
+ * Links: unity.c  doip_uds.c  mock_fsm.c  doip_log.c
  *
  * Run: ./test-uds
  */
 #include "unity.h"
 #include "transport/doip_uds.h"
+#include "core/doip_context.h"
 #include "config/doip_uds_config.h"
 #include "core/doip_log.h"
 #include "mock_fsm.h"
@@ -26,6 +27,21 @@
 
 static DoIP_EcuIdentity_t s_test_identity;
 
+/* The simulator instance under test. Only its UDS-related parts are used:
+ * identity, request hook and DTC memory. */
+static struct DoIP_Context s_ecu;
+
+typedef int (*uds_hook_t)(uint8_t, const uint8_t*, uint16_t, uint8_t*, uint16_t, uint16_t*, void*);
+
+/** (Re)initialise the instance's UDS state; a NULL identity keeps the current one. */
+static void uds_init(const DoIP_EcuIdentity_t *identity, uds_hook_t hook, void *user_ctx)
+{
+    if (identity) s_ecu.identity = *identity;
+    s_ecu.config.on_uds_request = hook;
+    s_ecu.config.user_context   = user_ctx;
+    doip_uds_init(&s_ecu);
+}
+
 /* ── Shared request / response buffers ────────────────────────────── */
 static uint8_t  s_resp[DOIP_MAX_PAYLOAD_SIZE];
 static uint16_t s_rlen;
@@ -37,6 +53,7 @@ static UdsClientContext_t make_ctx(void)
 {
     UdsClientContext_t ctx;
     memset(&ctx, 0, sizeof(ctx));
+    ctx.ecu             = &s_ecu;
     ctx.current_session = UDS_SESSION_DEFAULT_STATE;
     /* Set last_activity to now so S3 timeout doesn't fire */
     struct timespec ts;
@@ -57,12 +74,13 @@ static int process(UdsClientContext_t *ctx, const uint8_t *req, uint16_t req_len
 void setUp(void)
 {
     mock_fsm_reset();
+    memset(&s_ecu, 0, sizeof(s_ecu));          /* also empties the registered-DID table */
     memset(&s_test_identity, 0, sizeof(s_test_identity));
     memcpy(s_test_identity.vin,              TEST_VIN,    DOIP_VIN_LENGTH);
     strncpy(s_test_identity.software_version, TEST_SW,   sizeof(s_test_identity.software_version) - 1);
     strncpy(s_test_identity.system_name,      TEST_NAME,  sizeof(s_test_identity.system_name) - 1);
     strncpy(s_test_identity.serial_number,    TEST_SERIAL,sizeof(s_test_identity.serial_number) - 1);
-    doip_uds_init(&s_test_identity, NULL, NULL);
+    uds_init(&s_test_identity, NULL, NULL);
 }
 
 void tearDown(void)
@@ -74,7 +92,7 @@ void tearDown(void)
 
 void test_init_null_identity_uses_default(void)
 {
-    doip_uds_init(NULL, NULL, NULL);  /* re-init with no identity */
+    uds_init(NULL, NULL, NULL);  /* re-init with no identity */
 
     UdsClientContext_t ctx = make_ctx();
     uint8_t req[] = { UDS_SID_READ_DATA_BY_ID, 0xF1, 0x90 };
@@ -239,15 +257,112 @@ void test_tester_present_valid(void)
 
 void test_tester_present_suppress_bit(void)
 {
-    /* Bit 7 set = suppress positive response — server still replies in our impl */
+    /* Bit 7 set = suppress positive response: service runs, nothing is sent */
     UdsClientContext_t ctx = make_ctx();
     uint8_t req[] = { UDS_SID_TESTER_PRESENT, 0x80 };
     int rc = process(&ctx, req, sizeof(req));
 
-    /* The handler masks req[1] & 0x7F == 0x00, so it is valid */
     TEST_ASSERT_EQUAL_INT(0, rc);
-    TEST_ASSERT_EQUAL_HEX8(UDS_SID_TESTER_PRESENT_RES, s_resp[0]);
+    TEST_ASSERT_EQUAL_UINT16(0, s_rlen);
     TEST_ASSERT_EQUAL_INT(1, g_mock_diag_activity_calls);
+}
+
+void test_suppress_bit_session_control_still_switches(void)
+{
+    UdsClientContext_t ctx = make_ctx();
+    uint8_t req[] = { UDS_SID_SESSION_CONTROL, 0x80 | UDS_SESSION_EXTENDED };
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, req, sizeof(req)));
+    TEST_ASSERT_EQUAL_UINT16(0, s_rlen);
+    TEST_ASSERT_EQUAL_INT(UDS_SESSION_EXTENDED_STATE, ctx.current_session);
+}
+
+void test_suppress_bit_does_not_hide_negative_response(void)
+{
+    UdsClientContext_t ctx = make_ctx();
+    uint8_t req[] = { UDS_SID_TESTER_PRESENT, 0x81 };  /* suppress + invalid sub-fn */
+    TEST_ASSERT_EQUAL_INT(-1, process(&ctx, req, sizeof(req)));
+    TEST_ASSERT_EQUAL_UINT16(3, s_rlen);
+    TEST_ASSERT_EQUAL_HEX8(0x7F, s_resp[0]);
+}
+
+void test_suppress_bit_ignored_for_services_without_subfunction(void)
+{
+    /* 0x22 has no sub-function: a DID starting with a high bit is not a suppress request */
+    UdsClientContext_t ctx = make_ctx();
+    uint8_t req[] = { UDS_SID_READ_DATA_BY_ID, 0xF1, 0x90 };
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, req, sizeof(req)));
+    TEST_ASSERT_EQUAL_UINT16(3 + DOIP_VIN_LENGTH, s_rlen);
+}
+
+/* ── Write Data By Identifier (0x2E) ───────────────────────────────── */
+
+static UdsClientContext_t make_extended_ctx(void)
+{
+    UdsClientContext_t ctx = make_ctx();
+    ctx.current_session   = UDS_SESSION_EXTENDED_STATE;
+    ctx.security_unlocked = true;
+    return ctx;
+}
+
+void test_write_did_vin_roundtrip(void)
+{
+    UdsClientContext_t ctx = make_extended_ctx();
+    uint8_t wr[3 + DOIP_VIN_LENGTH] = { UDS_SID_WRITE_DATA_BY_ID, 0xF1, 0x90 };
+    memcpy(&wr[3], "NEWVIN00000000001", DOIP_VIN_LENGTH);
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, wr, sizeof(wr)));
+    TEST_ASSERT_EQUAL_UINT16(3, s_rlen);
+    TEST_ASSERT_EQUAL_HEX8(UDS_SID_WRITE_DATA_BY_ID_RES, s_resp[0]);
+    TEST_ASSERT_EQUAL_HEX8(0xF1, s_resp[1]);
+    TEST_ASSERT_EQUAL_HEX8(0x90, s_resp[2]);
+
+    uint8_t rd[] = { UDS_SID_READ_DATA_BY_ID, 0xF1, 0x90 };
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, rd, sizeof(rd)));
+    TEST_ASSERT_EQUAL_MEMORY("NEWVIN00000000001", &s_resp[3], DOIP_VIN_LENGTH);
+}
+
+void test_write_did_string_shorter_than_old_value(void)
+{
+    UdsClientContext_t ctx = make_extended_ctx();
+    uint8_t wr[] = { UDS_SID_WRITE_DATA_BY_ID, 0xF1, 0x8C, 'A', 'B' };
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, wr, sizeof(wr)));
+
+    uint8_t rd[] = { UDS_SID_READ_DATA_BY_ID, 0xF1, 0x8C };
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, rd, sizeof(rd)));
+    TEST_ASSERT_EQUAL_UINT16(3 + 2, s_rlen);
+    TEST_ASSERT_EQUAL_MEMORY("AB", &s_resp[3], 2);
+}
+
+static void expect_write_nrc(UdsClientContext_t *ctx, const uint8_t *req, uint16_t len, uint8_t nrc)
+{
+    TEST_ASSERT_EQUAL_INT(-1, process(ctx, req, len));
+    TEST_ASSERT_EQUAL_UINT16(3, s_rlen);
+    TEST_ASSERT_EQUAL_HEX8(0x7F, s_resp[0]);
+    TEST_ASSERT_EQUAL_HEX8(UDS_SID_WRITE_DATA_BY_ID, s_resp[1]);
+    TEST_ASSERT_EQUAL_HEX8(nrc, s_resp[2]);
+}
+
+void test_write_did_negative_responses(void)
+{
+    UdsClientContext_t ext = make_extended_ctx();
+    UdsClientContext_t def = make_ctx();
+
+    uint8_t no_data[]   = { UDS_SID_WRITE_DATA_BY_ID, 0xF1, 0x90 };
+    uint8_t short_vin[] = { UDS_SID_WRITE_DATA_BY_ID, 0xF1, 0x90, 'X' };
+    uint8_t read_only[] = { UDS_SID_WRITE_DATA_BY_ID, 0xF1, 0x82, 'X' };  /* SW version */
+    uint8_t ok_serial[] = { UDS_SID_WRITE_DATA_BY_ID, 0xF1, 0x8C, 'X' };
+    uint8_t too_long[3 + sizeof(((DoIP_EcuIdentity_t*)0)->serial_number)] =
+                          { UDS_SID_WRITE_DATA_BY_ID, 0xF1, 0x8C };
+
+    expect_write_nrc(&ext, no_data,   sizeof(no_data),   UDS_NRC_INCORRECT_MESSAGE_LENGTH);
+    expect_write_nrc(&ext, short_vin, sizeof(short_vin), UDS_NRC_INCORRECT_MESSAGE_LENGTH);
+    expect_write_nrc(&ext, too_long,  sizeof(too_long),  UDS_NRC_INCORRECT_MESSAGE_LENGTH);
+    expect_write_nrc(&ext, read_only, sizeof(read_only), UDS_NRC_REQUEST_OUT_OF_RANGE);
+    expect_write_nrc(&def, ok_serial, sizeof(ok_serial), UDS_NRC_SERVICE_NOT_SUPPORTED_IN_SESSION);
+
+    /* None of the rejected writes changed the serial number */
+    uint8_t rd[] = { UDS_SID_READ_DATA_BY_ID, 0xF1, 0x8C };
+    TEST_ASSERT_EQUAL_INT(0, process(&ext, rd, sizeof(rd)));
+    TEST_ASSERT_EQUAL_MEMORY(TEST_SERIAL, &s_resp[3], strlen(TEST_SERIAL));
 }
 
 void test_tester_present_invalid_subfunc(void)
@@ -279,13 +394,330 @@ void test_ecu_reset_valid(void)
 
 void test_routine_control_basic(void)
 {
-    UdsClientContext_t ctx = make_ctx();
+    UdsClientContext_t ctx = make_extended_ctx();
     uint8_t req[] = { UDS_SID_ROUTINE_CONTROL, 0x01, 0xFF, 0x01 };
     int rc = process(&ctx, req, sizeof(req));
 
     TEST_ASSERT_EQUAL_INT(0, rc);
     TEST_ASSERT_EQUAL_HEX8(UDS_SID_ROUTINE_CONTROL_RES, s_resp[0]);
     TEST_ASSERT_EQUAL_HEX8(0x01, s_resp[1]);  /* sub-function echoed */
+}
+
+void test_non_default_only_services_rejected_in_default_session(void)
+{
+    UdsClientContext_t ctx = make_ctx();
+    uint8_t routine[] = { UDS_SID_ROUTINE_CONTROL, 0x01, 0xFF, 0x01 };
+    TEST_ASSERT_EQUAL_INT(-1, process(&ctx, routine, sizeof(routine)));
+    TEST_ASSERT_EQUAL_HEX8(0x7F, s_resp[0]);
+    TEST_ASSERT_EQUAL_HEX8(UDS_SID_ROUTINE_CONTROL, s_resp[1]);
+    TEST_ASSERT_EQUAL_HEX8(UDS_NRC_SERVICE_NOT_SUPPORTED_IN_SESSION, s_resp[2]);
+
+    uint8_t comm_ctrl[] = { UDS_SID_COMMUNICATION_CONTROL, 0x00, 0x01 };  /* auto-responded SID */
+    TEST_ASSERT_EQUAL_INT(-1, process(&ctx, comm_ctrl, sizeof(comm_ctrl)));
+    TEST_ASSERT_EQUAL_HEX8(UDS_NRC_SERVICE_NOT_SUPPORTED_IN_SESSION, s_resp[2]);
+}
+
+/* ── Security Access (0x27) ───────────────────────────────────────── */
+
+/** Request a seed and send a key; returns the rc of the sendKey request. */
+static int seed_and_key(UdsClientContext_t *ctx, uint32_t key_xor)
+{
+    uint8_t seed_req[] = { UDS_SID_SECURITY_ACCESS, 0x01 };
+    TEST_ASSERT_EQUAL_INT(0, process(ctx, seed_req, sizeof(seed_req)));
+    TEST_ASSERT_EQUAL_UINT16(6, s_rlen);
+    uint32_t seed = ((uint32_t)s_resp[2] << 24) | ((uint32_t)s_resp[3] << 16) |
+                    ((uint32_t)s_resp[4] << 8) | s_resp[5];
+    TEST_ASSERT_NOT_EQUAL(0, seed);
+    uint32_t key = seed ^ key_xor;
+    uint8_t key_req[] = { UDS_SID_SECURITY_ACCESS, 0x02,
+                          (uint8_t)(key >> 24), (uint8_t)(key >> 16), (uint8_t)(key >> 8), (uint8_t)key };
+    return process(ctx, key_req, sizeof(key_req));
+}
+
+static UdsClientContext_t make_locked_extended_ctx(void)
+{
+    UdsClientContext_t ctx = make_extended_ctx();
+    ctx.security_unlocked = false;
+    return ctx;
+}
+
+void test_security_access_unlocks_write(void)
+{
+    UdsClientContext_t ctx = make_locked_extended_ctx();
+    uint8_t wr[] = { UDS_SID_WRITE_DATA_BY_ID, 0xF1, 0x8C, 'Z' };
+
+    TEST_ASSERT_EQUAL_INT(-1, process(&ctx, wr, sizeof(wr)));
+    TEST_ASSERT_EQUAL_HEX8(UDS_NRC_SECURITY_ACCESS_DENIED, s_resp[2]);
+
+    TEST_ASSERT_EQUAL_INT(0, seed_and_key(&ctx, UDS_SECURITY_KEY_MASK));
+    TEST_ASSERT_EQUAL_HEX8(UDS_SID_SECURITY_ACCESS_RES, s_resp[0]);
+    TEST_ASSERT_TRUE(ctx.security_unlocked);
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, wr, sizeof(wr)));
+
+    /* Unlocked ECU reports a zero seed */
+    uint8_t seed_req[] = { UDS_SID_SECURITY_ACCESS, 0x01 };
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, seed_req, sizeof(seed_req)));
+    TEST_ASSERT_EACH_EQUAL_HEX8(0x00, &s_resp[2], 4);
+}
+
+void test_security_access_wrong_key_and_lockout(void)
+{
+    UdsClientContext_t ctx = make_locked_extended_ctx();
+    for (int i = 1; i < UDS_SECURITY_MAX_ATTEMPTS; i++) {
+        TEST_ASSERT_EQUAL_INT(-1, seed_and_key(&ctx, ~(uint32_t)UDS_SECURITY_KEY_MASK));
+        TEST_ASSERT_EQUAL_HEX8(UDS_NRC_INVALID_KEY, s_resp[2]);
+    }
+    TEST_ASSERT_EQUAL_INT(-1, seed_and_key(&ctx, ~(uint32_t)UDS_SECURITY_KEY_MASK));
+    TEST_ASSERT_EQUAL_HEX8(UDS_NRC_EXCEEDED_ATTEMPTS, s_resp[2]);
+    TEST_ASSERT_FALSE(ctx.security_unlocked);
+
+    /* Locked out: even a seed request is refused */
+    uint8_t seed_req[] = { UDS_SID_SECURITY_ACCESS, 0x01 };
+    TEST_ASSERT_EQUAL_INT(-1, process(&ctx, seed_req, sizeof(seed_req)));
+    TEST_ASSERT_EQUAL_HEX8(UDS_NRC_TIME_DELAY_NOT_EXPIRED, s_resp[2]);
+}
+
+void test_security_access_sequence_and_format_errors(void)
+{
+    UdsClientContext_t ctx = make_locked_extended_ctx();
+    uint8_t key_first[] = { UDS_SID_SECURITY_ACCESS, 0x02, 0, 0, 0, 0 };
+    TEST_ASSERT_EQUAL_INT(-1, process(&ctx, key_first, sizeof(key_first)));
+    TEST_ASSERT_EQUAL_HEX8(UDS_NRC_REQUEST_SEQUENCE_ERROR, s_resp[2]);
+
+    uint8_t bad_level[] = { UDS_SID_SECURITY_ACCESS, 0x05 };
+    TEST_ASSERT_EQUAL_INT(-1, process(&ctx, bad_level, sizeof(bad_level)));
+    TEST_ASSERT_EQUAL_HEX8(UDS_NRC_SUB_FUNCTION_NOT_SUPPORTED, s_resp[2]);
+
+    uint8_t short_key[] = { UDS_SID_SECURITY_ACCESS, 0x02, 0x00 };
+    TEST_ASSERT_EQUAL_INT(-1, process(&ctx, short_key, sizeof(short_key)));
+    TEST_ASSERT_EQUAL_HEX8(UDS_NRC_INCORRECT_MESSAGE_LENGTH, s_resp[2]);
+
+    UdsClientContext_t def = make_ctx();
+    uint8_t seed_req[] = { UDS_SID_SECURITY_ACCESS, 0x01 };
+    TEST_ASSERT_EQUAL_INT(-1, process(&def, seed_req, sizeof(seed_req)));
+    TEST_ASSERT_EQUAL_HEX8(UDS_NRC_SERVICE_NOT_SUPPORTED_IN_SESSION, s_resp[2]);
+}
+
+/* ── DTCs (0x19 / 0x14) — default table: 010000/09, 030100/08, C07300/04 ── */
+
+void test_dtc_count_and_list_by_status_mask(void)
+{
+    UdsClientContext_t ctx = make_ctx();
+    uint8_t count_req[] = { UDS_SID_READ_DTC_INFO, 0x01, 0x08 };   /* confirmed */
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, count_req, sizeof(count_req)));
+    const uint8_t count_exp[] = { 0x59, 0x01, 0xFF, 0x01, 0x00, 0x02 };
+    TEST_ASSERT_EQUAL_UINT16(sizeof(count_exp), s_rlen);
+    TEST_ASSERT_EQUAL_MEMORY(count_exp, s_resp, sizeof(count_exp));
+
+    uint8_t list_req[] = { UDS_SID_READ_DTC_INFO, 0x02, 0x08 };
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, list_req, sizeof(list_req)));
+    const uint8_t list_exp[] = { 0x59, 0x02, 0xFF, 0x01, 0x00, 0x00, 0x09, 0x03, 0x01, 0x00, 0x08 };
+    TEST_ASSERT_EQUAL_UINT16(sizeof(list_exp), s_rlen);
+    TEST_ASSERT_EQUAL_MEMORY(list_exp, s_resp, sizeof(list_exp));
+
+    uint8_t all_req[] = { UDS_SID_READ_DTC_INFO, 0x0A };
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, all_req, sizeof(all_req)));
+    TEST_ASSERT_EQUAL_UINT16(3 + 3 * 4, s_rlen);
+}
+
+void test_dtc_clear_single_and_all(void)
+{
+    UdsClientContext_t ctx = make_ctx();
+    uint8_t count_any[] = { UDS_SID_READ_DTC_INFO, 0x01, 0xFF };
+
+    uint8_t clear_one[] = { UDS_SID_CLEAR_DTC, 0x03, 0x01, 0x00 };
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, clear_one, sizeof(clear_one)));
+    TEST_ASSERT_EQUAL_UINT16(1, s_rlen);
+    TEST_ASSERT_EQUAL_HEX8(UDS_SID_CLEAR_DTC_RES, s_resp[0]);
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, count_any, sizeof(count_any)));
+    TEST_ASSERT_EQUAL_HEX8(2, s_resp[5]);
+
+    uint8_t clear_all[] = { UDS_SID_CLEAR_DTC, 0xFF, 0xFF, 0xFF };
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, clear_all, sizeof(clear_all)));
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, count_any, sizeof(count_any)));
+    TEST_ASSERT_EQUAL_HEX8(0, s_resp[5]);
+
+    /* Supported DTCs are still listed after a clear, with status 0 */
+    uint8_t all_req[] = { UDS_SID_READ_DTC_INFO, 0x0A };
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, all_req, sizeof(all_req)));
+    TEST_ASSERT_EQUAL_UINT16(3 + 3 * 4, s_rlen);
+    TEST_ASSERT_EQUAL_HEX8(0x00, s_resp[6]);
+}
+
+void test_dtc_negative_responses(void)
+{
+    UdsClientContext_t ctx = make_ctx();
+    uint8_t bad_sub[]   = { UDS_SID_READ_DTC_INFO, 0x55, 0xFF };
+    uint8_t no_mask[]   = { UDS_SID_READ_DTC_INFO, 0x02 };
+    uint8_t unknown[]   = { UDS_SID_CLEAR_DTC, 0x12, 0x34, 0x56 };
+    uint8_t short_clr[] = { UDS_SID_CLEAR_DTC, 0xFF, 0xFF };
+
+    TEST_ASSERT_EQUAL_INT(-1, process(&ctx, bad_sub, sizeof(bad_sub)));
+    TEST_ASSERT_EQUAL_HEX8(UDS_NRC_SUB_FUNCTION_NOT_SUPPORTED, s_resp[2]);
+    TEST_ASSERT_EQUAL_INT(-1, process(&ctx, no_mask, sizeof(no_mask)));
+    TEST_ASSERT_EQUAL_HEX8(UDS_NRC_INCORRECT_MESSAGE_LENGTH, s_resp[2]);
+    TEST_ASSERT_EQUAL_INT(-1, process(&ctx, unknown, sizeof(unknown)));
+    TEST_ASSERT_EQUAL_HEX8(UDS_NRC_REQUEST_OUT_OF_RANGE, s_resp[2]);
+    TEST_ASSERT_EQUAL_INT(-1, process(&ctx, short_clr, sizeof(short_clr)));
+    TEST_ASSERT_EQUAL_HEX8(UDS_NRC_INCORRECT_MESSAGE_LENGTH, s_resp[2]);
+}
+
+/* ── Functional addressing rule ───────────────────────────────────── */
+
+void test_functional_addressing_suppression_rule(void)
+{
+    const uint8_t silent[] = { 0x11, 0x12, 0x31, 0x7E, 0x7F };
+    for (size_t i = 0; i < sizeof(silent); i++) {
+        const uint8_t res[3] = { 0x7F, 0x22, silent[i] };
+        TEST_ASSERT_TRUE_MESSAGE(doip_uds_functional_suppresses(res, 3), "NRC must stay silent");
+    }
+    const uint8_t sent[] = { 0x13, 0x21, 0x22, 0x33, 0x35, 0x78 };
+    for (size_t i = 0; i < sizeof(sent); i++) {
+        const uint8_t res[3] = { 0x7F, 0x22, sent[i] };
+        TEST_ASSERT_FALSE_MESSAGE(doip_uds_functional_suppresses(res, 3), "NRC must be sent");
+    }
+    const uint8_t positive[3] = { 0x62, 0xF1, 0x11 };   /* positive response, not an NRC */
+    TEST_ASSERT_FALSE(doip_uds_functional_suppresses(positive, 3));
+    TEST_ASSERT_FALSE(doip_uds_functional_suppresses(positive, 0));
+    TEST_ASSERT_FALSE(doip_uds_functional_suppresses(NULL, 3));
+}
+
+/* ── Registered DIDs (DoIP_SetDid) ────────────────────────────────── */
+
+void test_registered_did_is_readable_alone_and_with_others(void)
+{
+    UdsClientContext_t ctx = make_ctx();
+    const uint8_t part[] = { 0x01, 0x02, 0xAB };
+    TEST_ASSERT_EQUAL_INT(0, doip_uds_set_did(&s_ecu, 0xF187, part, sizeof(part), false));
+
+    uint8_t one[] = { UDS_SID_READ_DATA_BY_ID, 0xF1, 0x87 };
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, one, sizeof(one)));
+    const uint8_t expect_one[] = { 0x62, 0xF1, 0x87, 0x01, 0x02, 0xAB };
+    TEST_ASSERT_EQUAL_UINT16(sizeof(expect_one), s_rlen);
+    TEST_ASSERT_EQUAL_MEMORY(expect_one, s_resp, sizeof(expect_one));
+
+    uint8_t two[] = { UDS_SID_READ_DATA_BY_ID, 0xF1, 0x87, 0xF1, 0x90 };
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, two, sizeof(two)));
+    TEST_ASSERT_EQUAL_UINT16(6 + 2 + DOIP_VIN_LENGTH, s_rlen);
+    TEST_ASSERT_EQUAL_MEMORY(TEST_VIN, &s_resp[8], DOIP_VIN_LENGTH);
+
+    /* Registering it again replaces the value */
+    TEST_ASSERT_EQUAL_INT(0, doip_uds_set_did(&s_ecu, 0xF187, "NEW", 3, false));
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, one, sizeof(one)));
+    TEST_ASSERT_EQUAL_UINT16(6, s_rlen);
+    TEST_ASSERT_EQUAL_MEMORY("NEW", &s_resp[3], 3);
+    TEST_ASSERT_EQUAL_UINT8(1, s_ecu.did_count);
+}
+
+void test_registered_did_write_rules(void)
+{
+    UdsClientContext_t ctx = make_extended_ctx();
+    TEST_ASSERT_EQUAL_INT(0, doip_uds_set_did(&s_ecu, 0x1000, "fixed", 5, false));
+    TEST_ASSERT_EQUAL_INT(0, doip_uds_set_did(&s_ecu, 0x2000, "old", 3, true));
+
+    uint8_t wr_fixed[] = { UDS_SID_WRITE_DATA_BY_ID, 0x10, 0x00, 'X' };
+    expect_write_nrc(&ctx, wr_fixed, sizeof(wr_fixed), UDS_NRC_REQUEST_OUT_OF_RANGE);
+
+    /* A writable DID takes any length up to the maximum, exactly */
+    uint8_t wr_max[3 + UDS_DID_DATA_MAX] = { UDS_SID_WRITE_DATA_BY_ID, 0x20, 0x00 };
+    memset(&wr_max[3], 'Z', UDS_DID_DATA_MAX);
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, wr_max, sizeof(wr_max)));
+    uint8_t rd[] = { UDS_SID_READ_DATA_BY_ID, 0x20, 0x00 };
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, rd, sizeof(rd)));
+    TEST_ASSERT_EQUAL_UINT16(3 + UDS_DID_DATA_MAX, s_rlen);
+    TEST_ASSERT_EACH_EQUAL_HEX8('Z', &s_resp[3], UDS_DID_DATA_MAX);
+
+    uint8_t wr_long[3 + UDS_DID_DATA_MAX + 1] = { UDS_SID_WRITE_DATA_BY_ID, 0x20, 0x00 };
+    expect_write_nrc(&ctx, wr_long, sizeof(wr_long), UDS_NRC_INCORRECT_MESSAGE_LENGTH);
+
+    uint8_t wr_short[] = { UDS_SID_WRITE_DATA_BY_ID, 0x20, 0x00, 'a', 'b' };
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, wr_short, sizeof(wr_short)));
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, rd, sizeof(rd)));
+    TEST_ASSERT_EQUAL_UINT16(3 + 2, s_rlen);
+    TEST_ASSERT_EQUAL_MEMORY("ab", &s_resp[3], 2);
+}
+
+void test_set_did_rejects_bad_input_and_a_full_table(void)
+{
+    uint8_t big[UDS_DID_DATA_MAX + 1] = { 0 };
+    TEST_ASSERT_EQUAL_INT(-1, doip_uds_set_did(NULL,   0x1000, "x", 1, false));
+    TEST_ASSERT_EQUAL_INT(-1, doip_uds_set_did(&s_ecu, 0x1000, NULL, 1, false));
+    TEST_ASSERT_EQUAL_INT(-1, doip_uds_set_did(&s_ecu, 0x1000, "x", 0, false));
+    TEST_ASSERT_EQUAL_INT(-1, doip_uds_set_did(&s_ecu, 0x1000, big, sizeof(big), false));
+    TEST_ASSERT_EQUAL_INT(-1, doip_uds_set_did(&s_ecu, UDS_DID_VIN_NUMBER, "x", 1, true));   /* identity DID */
+
+    for (uint16_t i = 0; i < UDS_DID_TABLE_SIZE; i++)
+        TEST_ASSERT_EQUAL_INT(0, doip_uds_set_did(&s_ecu, (uint16_t)(0x3000 + i), big, UDS_DID_DATA_MAX, false));
+    TEST_ASSERT_EQUAL_INT(-1, doip_uds_set_did(&s_ecu, 0x4000, "x", 1, false));              /* table full   */
+    TEST_ASSERT_EQUAL_INT(0,  doip_uds_set_did(&s_ecu, 0x3000, "x", 1, false));              /* replace is fine */
+
+    /* Reading every registered DID at once stays inside the response buffer */
+    UdsClientContext_t ctx = make_ctx();
+    uint8_t all[1 + 2 * UDS_DID_TABLE_SIZE] = { UDS_SID_READ_DATA_BY_ID };
+    for (uint16_t i = 0; i < UDS_DID_TABLE_SIZE; i++) { all[1 + 2 * i] = 0x30; all[2 + 2 * i] = (uint8_t)i; }
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, all, sizeof(all)));
+    TEST_ASSERT_EQUAL_UINT16(1 + (2 + 1) + (UDS_DID_TABLE_SIZE - 1) * (2 + UDS_DID_DATA_MAX), s_rlen);
+}
+
+/* ── ECU Reset details ────────────────────────────────────────────── */
+
+void test_ecu_reset_returns_to_default_session(void)
+{
+    UdsClientContext_t ctx = make_extended_ctx();
+    ctx.security_unlocked = true;
+    uint8_t req[] = { UDS_SID_ECU_RESET, UDS_RESET_SOFT };
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, req, sizeof(req)));
+    TEST_ASSERT_EQUAL_INT(UDS_SESSION_DEFAULT_STATE, ctx.current_session);
+    TEST_ASSERT_FALSE(ctx.security_unlocked);
+}
+
+void test_ecu_reset_invalid_requests(void)
+{
+    UdsClientContext_t ctx = make_extended_ctx();
+    uint8_t bad_type[] = { UDS_SID_ECU_RESET, 0x7E };
+    TEST_ASSERT_EQUAL_INT(-1, process(&ctx, bad_type, sizeof(bad_type)));
+    TEST_ASSERT_EQUAL_HEX8(UDS_NRC_SUB_FUNCTION_NOT_SUPPORTED, s_resp[2]);
+    uint8_t bad_len[] = { UDS_SID_ECU_RESET, 0x01, 0x00 };
+    TEST_ASSERT_EQUAL_INT(-1, process(&ctx, bad_len, sizeof(bad_len)));
+    TEST_ASSERT_EQUAL_HEX8(UDS_NRC_INCORRECT_MESSAGE_LENGTH, s_resp[2]);
+    /* Rejected requests did not reset the session */
+    TEST_ASSERT_EQUAL_INT(UDS_SESSION_EXTENDED_STATE, ctx.current_session);
+}
+
+/* ── Read DID: multiple identifiers ───────────────────────────────── */
+
+void test_read_multiple_dids(void)
+{
+    UdsClientContext_t ctx = make_ctx();
+    /* VIN, an unsupported DID (skipped), then serial number */
+    uint8_t req[] = { UDS_SID_READ_DATA_BY_ID, 0xF1, 0x90, 0x12, 0x34, 0xF1, 0x8C };
+    TEST_ASSERT_EQUAL_INT(0, process(&ctx, req, sizeof(req)));
+
+    size_t sn = strlen(TEST_SERIAL);
+    TEST_ASSERT_EQUAL_UINT16(1 + 2 + DOIP_VIN_LENGTH + 2 + sn, s_rlen);
+    TEST_ASSERT_EQUAL_HEX8(UDS_SID_READ_DATA_BY_ID_RES, s_resp[0]);
+    TEST_ASSERT_EQUAL_HEX8(0xF1, s_resp[1]);
+    TEST_ASSERT_EQUAL_HEX8(0x90, s_resp[2]);
+    TEST_ASSERT_EQUAL_MEMORY(TEST_VIN, &s_resp[3], DOIP_VIN_LENGTH);
+    TEST_ASSERT_EQUAL_HEX8(0xF1, s_resp[3 + DOIP_VIN_LENGTH]);
+    TEST_ASSERT_EQUAL_HEX8(0x8C, s_resp[4 + DOIP_VIN_LENGTH]);
+    TEST_ASSERT_EQUAL_MEMORY(TEST_SERIAL, &s_resp[5 + DOIP_VIN_LENGTH], sn);
+}
+
+void test_read_did_bad_length_and_too_long(void)
+{
+    UdsClientContext_t ctx = make_ctx();
+    uint8_t odd[] = { UDS_SID_READ_DATA_BY_ID, 0xF1, 0x90, 0xF1 };
+    TEST_ASSERT_EQUAL_INT(-1, process(&ctx, odd, sizeof(odd)));
+    TEST_ASSERT_EQUAL_HEX8(UDS_NRC_INCORRECT_MESSAGE_LENGTH, s_resp[2]);
+
+    /* 300 x VIN would need 5700 bytes: must be refused, not overflow the buffer */
+    static uint8_t many[1 + 2 * 300];
+    many[0] = UDS_SID_READ_DATA_BY_ID;
+    for (int i = 0; i < 300; i++) { many[1 + 2 * i] = 0xF1; many[2 + 2 * i] = 0x90; }
+    TEST_ASSERT_EQUAL_INT(-1, process(&ctx, many, sizeof(many)));
+    TEST_ASSERT_EQUAL_UINT16(3, s_rlen);
+    TEST_ASSERT_EQUAL_HEX8(UDS_NRC_RESPONSE_TOO_LONG, s_resp[2]);
 }
 
 /* ── Runtime hook tests ───────────────────────────────────────────── */
@@ -325,7 +757,7 @@ static int hook_passthrough(uint8_t sid,
 void test_runtime_hook_intercepts_request(void)
 {
     s_hook_called = 0;
-    doip_uds_init(&s_test_identity, hook_intercept, NULL);
+    uds_init(&s_test_identity, hook_intercept, NULL);
 
     UdsClientContext_t ctx = make_ctx();
     uint8_t req[] = { UDS_SID_READ_DATA_BY_ID, 0xF1, 0x90 };
@@ -342,7 +774,7 @@ void test_runtime_hook_intercepts_request(void)
 void test_runtime_hook_fallthrough(void)
 {
     s_hook_called = 0;
-    doip_uds_init(&s_test_identity, hook_passthrough, NULL);
+    uds_init(&s_test_identity, hook_passthrough, NULL);
 
     UdsClientContext_t ctx = make_ctx();
     uint8_t req[] = { UDS_SID_READ_DATA_BY_ID, 0xF1, 0x90 };
@@ -387,11 +819,36 @@ int main(void)
     RUN_TEST(test_tester_present_suppress_bit);
     RUN_TEST(test_tester_present_invalid_subfunc);
 
+    /* Suppress positive response bit */
+    RUN_TEST(test_suppress_bit_session_control_still_switches);
+    RUN_TEST(test_suppress_bit_does_not_hide_negative_response);
+    RUN_TEST(test_suppress_bit_ignored_for_services_without_subfunction);
+
+    /* Write DID */
+    RUN_TEST(test_write_did_vin_roundtrip);
+    RUN_TEST(test_write_did_string_shorter_than_old_value);
+    RUN_TEST(test_write_did_negative_responses);
+
     /* ECU Reset */
     RUN_TEST(test_ecu_reset_valid);
 
     /* Routine Control */
     RUN_TEST(test_routine_control_basic);
+    RUN_TEST(test_non_default_only_services_rejected_in_default_session);
+    RUN_TEST(test_security_access_unlocks_write);
+    RUN_TEST(test_security_access_wrong_key_and_lockout);
+    RUN_TEST(test_security_access_sequence_and_format_errors);
+    RUN_TEST(test_dtc_count_and_list_by_status_mask);
+    RUN_TEST(test_dtc_clear_single_and_all);
+    RUN_TEST(test_dtc_negative_responses);
+    RUN_TEST(test_functional_addressing_suppression_rule);
+    RUN_TEST(test_registered_did_is_readable_alone_and_with_others);
+    RUN_TEST(test_registered_did_write_rules);
+    RUN_TEST(test_set_did_rejects_bad_input_and_a_full_table);
+    RUN_TEST(test_ecu_reset_returns_to_default_session);
+    RUN_TEST(test_ecu_reset_invalid_requests);
+    RUN_TEST(test_read_multiple_dids);
+    RUN_TEST(test_read_did_bad_length_and_too_long);
 
     /* Runtime hook */
     RUN_TEST(test_runtime_hook_intercepts_request);

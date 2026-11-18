@@ -3,6 +3,9 @@
 #include <signal.h>
 #include <unistd.h>
 #include <string.h>
+#include <getopt.h>
+#include <ctype.h>
+#include <stdbool.h>
 #include "doip_api.h"
 #include "config/doip_uds_config.h"
 
@@ -41,8 +44,75 @@ static int my_uds_hook(uint8_t sid,
     return -1;  /* not handled — use built-in handler */
 }
 
+static void usage(const char *prog) {
+    printf("Usage: %s [options]\n"
+           "  --vin <17 chars>      Vehicle identification number\n"
+           "  --address <addr>      ECU logical address, e.g. 0x1003\n"
+           "  --functional-address <addr>  Functional group address (default 0x%04X)\n"
+           "  --port <port>         UDP + TCP port (default %u)\n"
+           "  --did <DID>=<value>   Extra data identifier for 0x22, e.g. F187=PN-1234 or\n"
+           "                        F1A0=0x0102AB (hex bytes). Repeatable.\n"
+           "  --did-rw <DID>=<value>  The same, and writable with 0x2E\n"
+           "  --log-level <0-4>     0=ERROR 1=WARN 2=INFO 3=DEBUG 4=VERBOSE (default 3)\n"
+           "  --log-file <path>     Also write the log to a file\n"
+           "Fault injection:\n"
+           "  --response-delay <ms> Delay UDS responses (sends 7F xx 78 while waiting)\n"
+           "  --drop-ack            Never send the DoIP diagnostic ACK\n"
+           "  --drop-response       Never send UDS responses\n"
+           "  --force-nack <code>   Reject every diagnostic message with this NACK code\n"
+#if DOIP_ENABLE_TLS
+           "TLS (required in this build):\n"
+           "  --tls-cert <pem>      Server certificate\n"
+           "  --tls-key <pem>       Server private key\n"
+           "  --tls-ca <pem>        CA bundle used to verify client certificates\n"
+           "  --tls-verify-peer     Require a valid client certificate\n"
+#endif
+           "  --help                Show this help\n",
+           prog, (unsigned)DOIP_FUNCTIONAL_LOGICAL_ADDRESS, (unsigned)DOIP_TCP_PORT);
+}
+
+/* --did / --did-rw argument: <hex DID>=<text>  or  <hex DID>=0x<hex bytes> */
+static bool add_did(DoIP_Handle_t *handle, const char *arg, bool writable) {
+    char *eq = NULL;
+    unsigned long did = strtoul(arg, &eq, 16);
+    if (eq == arg || *eq != '=' || did > 0xFFFF) return false;
+
+    const char *value = eq + 1;
+    size_t      len   = strlen(value);
+    if (len < 2 || value[0] != '0' || (value[1] != 'x' && value[1] != 'X'))
+        return len <= UDS_DID_DATA_MAX &&
+               DoIP_SetDid(handle, (uint16_t)did, value, (uint16_t)len, writable) == 0;
+
+    uint8_t bytes[UDS_DID_DATA_MAX];
+    value += 2; len -= 2;
+    if (len == 0 || len % 2 != 0 || len / 2 > sizeof(bytes)) return false;
+    for (size_t i = 0; i < len; i += 2) {
+        if (!isxdigit((unsigned char)value[i]) || !isxdigit((unsigned char)value[i + 1])) return false;
+        const char pair[3] = { value[i], value[i + 1], '\0' };
+        bytes[i / 2] = (uint8_t)strtoul(pair, NULL, 16);
+    }
+    return DoIP_SetDid(handle, (uint16_t)did, bytes, (uint16_t)(len / 2), writable) == 0;
+}
+
+/* Parse an unsigned number (decimal or 0x hex) in [1, max]; exits on bad input. */
+static unsigned long parse_num_min(const char *opt, const char *s, unsigned long min, unsigned long max) {
+    char *end;
+    unsigned long v = strtoul(s, &end, 0);
+    if (*s == '\0' || *end != '\0' || v < min || v > max) {
+        fprintf(stderr, "Invalid value for --%s: '%s' (expected %lu..%lu)\n", opt, s, min, max);
+        exit(EXIT_FAILURE);
+    }
+    return v;
+}
+
+static unsigned long parse_num(const char *opt, const char *s, unsigned long max) {
+    return parse_num_min(opt, s, 1, max);
+}
+
 int main(int argc, char *argv[]) {
     signal(SIGINT, sigint_handler);
+    signal(SIGTERM, sigint_handler);
+    signal(SIGPIPE, SIG_IGN);   /* a tester disconnecting mid-response must not kill us */
 
     /* 1. Create Instance */
     DoIP_Handle_t *handle = DoIP_Create();
@@ -73,12 +143,78 @@ int main(int argc, char *argv[]) {
     config.ecu_identity          = &identity;
     config.on_uds_request        = my_uds_hook;
 
-    /* Optional: override log file via --log-file <path> */
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--log-file") == 0 && i + 1 < argc) {
-            config.log_file_path = argv[++i];
+    /* Command-line overrides */
+    static const struct option opts[] = {
+        { "vin",       required_argument, NULL, 'v' },
+        { "address",   required_argument, NULL, 'a' },
+        { "functional-address", required_argument, NULL, 'F' },
+        { "port",      required_argument, NULL, 'p' },
+        { "log-level", required_argument, NULL, 'l' },
+        { "log-file",  required_argument, NULL, 'f' },
+        { "did",            required_argument, NULL, 'D' },
+        { "did-rw",         required_argument, NULL, 'W' },
+        { "response-delay", required_argument, NULL, 'd' },
+        { "drop-ack",       no_argument,       NULL, 'A' },
+        { "drop-response",  no_argument,       NULL, 'R' },
+        { "force-nack",     required_argument, NULL, 'n' },
+#if DOIP_ENABLE_TLS
+        { "tls-cert",        required_argument, NULL, 'c' },
+        { "tls-key",         required_argument, NULL, 'k' },
+        { "tls-ca",          required_argument, NULL, 'C' },
+        { "tls-verify-peer", no_argument,       NULL, 'V' },
+#endif
+        { "help",      no_argument,       NULL, 'h' },
+        { 0 }
+    };
+    int opt;
+    while ((opt = getopt_long(argc, argv, "", opts, NULL)) != -1) {
+        switch (opt) {
+            case 'v':
+                if (strlen(optarg) != DOIP_VIN_LENGTH) {
+                    fprintf(stderr, "Invalid --vin: must be exactly %u characters\n",
+                            (unsigned)DOIP_VIN_LENGTH);
+                    DoIP_Destroy(handle);
+                    return EXIT_FAILURE;
+                }
+                memcpy(identity.vin, optarg, DOIP_VIN_LENGTH);
+                break;
+            case 'a': config.logical_address = (uint16_t)parse_num("address", optarg, 0xFFFF); break;
+            case 'F': config.functional_address = (uint16_t)parse_num("functional-address", optarg, 0xFFFF); break;
+            case 'p': config.port            = (uint16_t)parse_num("port", optarg, 65535);     break;
+            case 'l': config.log_level       = (uint8_t)parse_num_min("log-level", optarg, 0, 4);     break;
+            case 'f': config.log_file_path   = optarg; break;
+            case 'D':
+            case 'W':
+                if (!add_did(handle, optarg, opt == 'W')) {
+                    fprintf(stderr, "Invalid --did%s '%s': expected <hex DID>=<text> or <hex DID>=0x<hex bytes>, "
+                                    "1..%d bytes, at most %d DIDs, not an identity DID\n",
+                            opt == 'W' ? "-rw" : "", optarg, UDS_DID_DATA_MAX, UDS_DID_TABLE_SIZE);
+                    DoIP_Destroy(handle);
+                    return EXIT_FAILURE;
+                }
+                break;
+            case 'd': config.faults.response_delay_ms = (uint32_t)parse_num("response-delay", optarg, 600000); break;
+            case 'A': config.faults.drop_diag_ack     = true; break;
+            case 'R': config.faults.drop_response     = true; break;
+            case 'n': config.faults.force_diag_nack   = (uint8_t)parse_num("force-nack", optarg, 0xFF); break;
+#if DOIP_ENABLE_TLS
+            case 'c': config.tls.cert_file   = optarg; break;
+            case 'k': config.tls.key_file    = optarg; break;
+            case 'C': config.tls.ca_file     = optarg; break;
+            case 'V': config.tls.verify_peer = true;   break;
+#endif
+            case 'h': usage(argv[0]); DoIP_Destroy(handle); return EXIT_SUCCESS;
+            default:  usage(argv[0]); DoIP_Destroy(handle); return EXIT_FAILURE;
         }
     }
+
+#if DOIP_ENABLE_TLS
+    if (!config.tls.cert_file || !config.tls.key_file) {
+        fprintf(stderr, "This build has TLS enabled: --tls-cert and --tls-key are required\n");
+        DoIP_Destroy(handle);
+        return EXIT_FAILURE;
+    }
+#endif
 
     /* 4. Initialize */
     if (DoIP_Init(handle, &config) != 0) {

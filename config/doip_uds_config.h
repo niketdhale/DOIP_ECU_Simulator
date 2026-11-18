@@ -25,6 +25,14 @@
     0x10, 0x11, 0x14, 0x19, 0x22, 0x23, 0x27, 0x28, \
     0x2E, 0x31, 0x34, 0x36, 0x37, 0x38, 0x3E, 0x85
 
+/* SIDs that are rejected with NRC 0x7F (serviceNotSupportedInActiveSession)
+ * while the client is in the default session. */
+#define UDS_NON_DEFAULT_SESSION_SIDS \
+    0x27, 0x28, 0x2E, 0x31, 0x34, 0x36, 0x37, 0x85
+
+/* Largest UDS response the stack will build (DoIP payload minus SA/TA). */
+#define UDS_MAX_RESPONSE_LEN            (DOIP_MAX_PAYLOAD_SIZE - 4U)
+
 /* ===== Service ID Constants ===== */
 #define UDS_SID_SESSION_CONTROL         0x10
 #define UDS_SID_SESSION_CONTROL_RES     0x50
@@ -34,6 +42,8 @@
 #define UDS_SID_READ_DATA_BY_ID_RES     0x62
 #define UDS_SID_READ_DTC_INFO           0x19
 #define UDS_SID_READ_DTC_INFO_RES       0x59
+#define UDS_SID_CLEAR_DTC               0x14
+#define UDS_SID_CLEAR_DTC_RES           0x54
 #define UDS_SID_WRITE_DATA_BY_ID        0x2E
 #define UDS_SID_WRITE_DATA_BY_ID_RES    0x6E
 #define UDS_SID_ROUTINE_CONTROL         0x31
@@ -62,11 +72,18 @@
 #define UDS_NRC_SERVICE_NOT_SUPPORTED   0x11
 #define UDS_NRC_SUB_FUNCTION_NOT_SUPPORTED 0x12
 #define UDS_NRC_INCORRECT_MESSAGE_LENGTH 0x13
+#define UDS_NRC_RESPONSE_TOO_LONG       0x14
+#define UDS_NRC_BUSY_REPEAT_REQUEST     0x21
 #define UDS_NRC_CONDITIONS_NOT_CORRECT  0x22
 #define UDS_NRC_REQUEST_SEQUENCE_ERROR  0x24
 #define UDS_NRC_REQUEST_OUT_OF_RANGE    0x31
 #define UDS_NRC_SECURITY_ACCESS_DENIED  0x33
 #define UDS_NRC_INVALID_KEY             0x35
+#define UDS_NRC_RESPONSE_PENDING        0x78
+#define UDS_NRC_EXCEEDED_ATTEMPTS       0x36
+#define UDS_NRC_TIME_DELAY_NOT_EXPIRED  0x37
+#define UDS_NRC_SUB_FUNCTION_NOT_SUPPORTED_IN_SESSION 0x7E
+#define UDS_NRC_SERVICE_NOT_SUPPORTED_IN_SESSION 0x7F
 
 /* ===== Data Identifiers (DIDs) ===== */
 #define UDS_DID_VIN_NUMBER              0xF190
@@ -75,14 +92,36 @@
 #define UDS_DID_SOFTWARE_VERSION        0xF182
 #define UDS_DID_ECU_SERIAL_NUMBER       0xF18C
 
+/* Data identifiers registered at runtime with DoIP_SetDid(), per instance */
+#define UDS_DID_TABLE_SIZE              16      /* Max registered DIDs          */
+#define UDS_DID_DATA_MAX                64      /* Max data bytes per DID       */
+
 /* ===== Feature Toggles ===== */
 #define UDS_SUPPORT_SESSION_CONTROL     true
 #define UDS_SUPPORT_ECU_RESET           true
 #define UDS_SUPPORT_READ_DATA           true
-#define UDS_SUPPORT_WRITE_DATA          false
+#define UDS_SUPPORT_WRITE_DATA          true   /* 0x2E: VIN, system name, serial number; needs a non-default session */
 #define UDS_SUPPORT_ROUTINE_CONTROL     true
 #define UDS_SUPPORT_TESTER_PRESENT      true
-#define UDS_SUPPORT_SECURITY_ACCESS     false
+#define UDS_SUPPORT_SECURITY_ACCESS     true
+
+/* ===== Security Access (0x27), level 1: 27 01 = request seed, 27 02 = send key =====
+ * Simulator algorithm: key = seed XOR UDS_SECURITY_KEY_MASK (4 bytes, big-endian). */
+#define UDS_SECURITY_KEY_MASK           0xA5C3F00DUL
+#define UDS_SECURITY_MAX_ATTEMPTS       3       /* Invalid keys before lockout          */
+#define UDS_SECURITY_LOCKOUT_MS         10000   /* Lockout duration after max attempts  */
+/* SIDs answered with NRC 0x33 (securityAccessDenied) until unlocked */
+#define UDS_SECURED_SIDS                0x2E
+
+/* ===== Simulated DTC memory (0x19 ReadDTCInformation / 0x14 ClearDiagnosticInformation) =====
+ * { 3-byte DTC, status byte } pairs restored at every DoIP_Init().
+ * Status bits: 0x01 testFailed, 0x04 pendingDTC, 0x08 confirmedDTC. */
+#define UDS_SUPPORT_DTC                 true
+#define UDS_DTC_STATUS_AVAILABILITY_MASK 0xFF
+#define UDS_DTC_TABLE \
+    { 0x010000, 0x09 },   /* P0100 mass air flow circuit — failed + confirmed */ \
+    { 0x030100, 0x08 },   /* P0301 cylinder 1 misfire    — confirmed          */ \
+    { 0xC07300, 0x04 }    /* U0073 CAN bus off           — pending            */
 
 /* ===== Timing Parameters ===== */
 #define UDS_P2_SERVER_MS                50

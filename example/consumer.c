@@ -46,12 +46,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Satisfy extern globals declared in config/doip_config.h.
- * The library (doip_api.c) owns these at runtime; the client binary
- * only needs the declarations satisfied for the linker. */
-DoIP_RxIndication   g_doip_rx_cb = NULL;
-DoIP_TxConfirmation g_doip_tx_cb = NULL;
-
 /* ── helpers ──────────────────────────────────────────────────────── */
 static void print_hex(const char *label, const uint8_t *buf, uint16_t len)
 {

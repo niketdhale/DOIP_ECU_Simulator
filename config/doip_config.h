@@ -16,21 +16,23 @@
 #include <stdbool.h>
 
 /* ===== DoIP Version Selection ===== */
-#define DOIP_VERSION_2012   0  /* ISO 13400-2:2012 (16-bit addresses) */
-#define DOIP_VERSION_2019   1  /* ISO 13400-2:2019 (32-bit addresses) */
+#define DOIP_VERSION_2012   0  /* ISO 13400-2:2012 — protocol version 0x02 */
+#define DOIP_VERSION_2019   1  /* ISO 13400-2:2019 — protocol version 0x03 */
 
-/* CONFIGURABLE: Set your DoIP version here */
+/* CONFIGURABLE: Set your DoIP version here (or build with: make DOIP_2019=1) */
+#ifndef DOIP_PROTOCOL_VERSION_SELECTED
 #define DOIP_PROTOCOL_VERSION_SELECTED  DOIP_VERSION_2012
+#endif
 
-/* ===== Protocol Version Constants ===== */
+/* ===== Protocol Version Constants =====
+ * Logical addresses are 16-bit in both editions; only the header
+ * version byte (and its bitwise inverse) differs. */
 #if (DOIP_PROTOCOL_VERSION_SELECTED == DOIP_VERSION_2012)
     #define DOIP_PROTOCOL_VERSION       0x02U
     #define DOIP_INVERSE_VERSION        0xFDU
-    #define DOIP_LOGICAL_ADDR_SIZE      2U   /* 16-bit for 2012 */
 #elif (DOIP_PROTOCOL_VERSION_SELECTED == DOIP_VERSION_2019)
-    #define DOIP_PROTOCOL_VERSION       0x02U
-    #define DOIP_INVERSE_VERSION        0xFDU
-    #define DOIP_LOGICAL_ADDR_SIZE      4U   /* 32-bit for 2019 */
+    #define DOIP_PROTOCOL_VERSION       0x03U
+    #define DOIP_INVERSE_VERSION        0xFCU
 #else
     #error "Unsupported DoIP version selected"
 #endif
@@ -45,12 +47,25 @@
 /* Valid ECU Ranges: 0x0001-0x0DFF, 0x1000-0x7FFF, 0x8000-0xDFFF */
 #define DOIP_ECU_LOGICAL_ADDRESS    0x1003U
 #define DOIP_OBD_LOGICAL_ADDRESS    0x1340U
-#define DOIP_TESTER_LOGICAL_ADDRESS 0x0E00U     /* ISO 13400-2: reserved for external testers */
+/* Functional (group) address this ECU also answers to. ISO 13400-2 reserves
+ * 0xE400-0xEFFF for vehicle-manufacturer-defined functional group addresses. */
+#define DOIP_FUNCTIONAL_LOGICAL_ADDRESS 0xE400U
+#define DOIP_TESTER_LOGICAL_ADDRESS 0x0E00U     /* Default tester address used by the client */
+/* ISO 13400-2: range reserved for external test equipment; routing
+ * activation from any other source address is rejected (code 0x00). */
+#define DOIP_TESTER_ADDR_MIN        0x0E00U
+#define DOIP_TESTER_ADDR_MAX        0x0FFFU
 
 /* ===== Network Configuration ===== */
+#ifndef DOIP_UDP_PORT
 #define DOIP_UDP_PORT               13400U
+#endif
+#ifndef DOIP_TCP_PORT
 #define DOIP_TCP_PORT               13400U
-#define DOIP_MULTICAST_ADDR         "224.0.0.1"
+#endif
+#ifndef DOIP_MULTICAST_ADDR
+#define DOIP_MULTICAST_ADDR         "224.0.0.1"   /* IPv4 destination of vehicle announcements */
+#endif
 #define DOIP_BROADCAST_ADDR         "255.255.255.255"
 
 #define DOIP_MAX_PAYLOAD_SIZE       4096U
@@ -63,7 +78,9 @@
 #define DOIP_ENABLE_PERIODIC_ANNOUNCE  true
 
 /* Interval between announcements (milliseconds) */
+#ifndef DOIP_ANNOUNCE_INTERVAL_MS
 #define DOIP_ANNOUNCE_INTERVAL_MS   2000U /* (ISO default 2-5s) */
+#endif
 
 /* Maximum number of announcements to send at startup. 
    Set to 0 to disable, or 5 to send exactly 5 times then stop. */
@@ -78,12 +95,18 @@
 /* Max time a TCP client may stay CONNECTED without completing Routing Activation */
 #define DOIP_INITIAL_INACTIVITY_TIMEOUT_MS 2000U
 
-/* ===== Feature Toggles ===== */
-#define DOIP_DEV_ERROR_DETECT       false
+/* ===== Feature Toggles (override with -D, e.g. -DDOIP_SUPPORT_EID_REQUEST=false) =====
+ * VIN_REQUEST: answer Vehicle ID requests (PT 0x0001, 0x0003); EID_REQUEST: PT 0x0002;
+ * ALIVE_CHECK: server-initiated Alive Check probing (tester-initiated ones are always answered). */
+#ifndef DOIP_SUPPORT_VIN_REQUEST
 #define DOIP_SUPPORT_VIN_REQUEST    true
+#endif
+#ifndef DOIP_SUPPORT_EID_REQUEST
 #define DOIP_SUPPORT_EID_REQUEST    true
-#define DOIP_SUPPORT_ROUTING_ACT    true
+#endif
+#ifndef DOIP_SUPPORT_ALIVE_CHECK
 #define DOIP_SUPPORT_ALIVE_CHECK    true
+#endif
 
 /* ===== IPv6 Support =====
  * Dual-stack sockets (AF_INET6 + IPV6_V6ONLY=0).
@@ -117,24 +140,6 @@
 #define DOIP_ISOTP_N_BS_MS          1000U   /* Sender wait timeout for FC after FF    */
 #define DOIP_ISOTP_N_CR_MS          1000U   /* Receiver wait timeout for next CF      */
 #define DOIP_ISOTP_STMIN_MS         0U      /* Min separation time between CFs (ms)  */
-
-/* ===== Callback Hooks ===== */
-typedef void (*DoIP_RxIndication)(uint16_t payload_type, const uint8_t *data, uint32_t len);
-typedef void (*DoIP_TxConfirmation)(bool success);
-
-/* Async TCP-client event hooks (set by doip_api, consumed by doip_tcp) */
-typedef void (*DoIP_ClientConnectCb)   (int client_fd, void *user_ctx);
-typedef void (*DoIP_ClientDisconnectCb)(int client_fd, void *user_ctx);
-typedef int  (*DoIP_FrameReceivedCb)   (int client_fd, uint16_t pt,
-                                         const uint8_t *payload, uint32_t plen,
-                                         void *user_ctx);
-
-extern DoIP_RxIndication        g_doip_rx_cb;
-extern DoIP_TxConfirmation      g_doip_tx_cb;
-extern DoIP_ClientConnectCb     g_doip_client_connect_cb;
-extern DoIP_ClientDisconnectCb  g_doip_client_disconnect_cb;
-extern DoIP_FrameReceivedCb     g_doip_frame_received_cb;
-extern void                    *g_doip_async_user_ctx;
 
 /** @} */ /* end of doip_config group */
 

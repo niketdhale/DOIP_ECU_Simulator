@@ -40,7 +40,7 @@ typedef struct DoIP_Context DoIP_Handle_t;
  */
 typedef struct {
     /* Logging Configuration */
-    uint8_t  log_level;           /**< Log verbosity: 0=ERROR, 1=WARN, 2=INFO, 3=DEBUG, 4=VERBOSE */
+    uint8_t  log_level;           /**< Log verbosity: 0=ERROR, 1=WARN, 2=INFO, 3=DEBUG, 4=VERBOSE (used as given when a config is passed; NULL config = INFO) */
     const char *log_file_path;    /**< Path to log file, or NULL for console-only output */
 
     /* FSM / Timing Configuration */
@@ -49,17 +49,25 @@ typedef struct {
     /* Event Callbacks (Optional) */
 
     /**
-     * @brief Called when the FSM state changes (e.g., IDLE -> ROUTING_ACTIVE).
-     * @param[in] old_state  Previous state enum value.
-     * @param[in] new_state  New state enum value.
+     * @brief Called when the FSM state (DoIP_State_t in state/doip_fsm.h) changes.
+     *
+     * The FSM follows the UDS session: IDLE or ROUTING_ACTIVE -> DIAG_SESSION when
+     * a tester enters a non-default session, -> ROUTING_ACTIVE when it returns to
+     * the default session or resets the ECU, -> IDLE when S3 expires.
+     * Runs inside DoIP_Tick(); do not call this handle's API from it.
+     * @param[in] old_state  Previous state.
+     * @param[in] new_state  New state.
      * @param[in] user_ctx   Context pointer passed in DoIP_Config_t::user_context.
      */
     void (*on_state_change)(uint8_t old_state, uint8_t new_state, void *user_ctx);
 
     /**
-     * @brief Called when a DoIP message is received.
+     * @brief Called for every complete DoIP frame received over TCP or UDP,
+     *        before it is processed (vehicle announcements are not reported).
+     *
+     * Runs inside DoIP_Tick(); do not call this handle's API from it.
      * @param[in] payload_type  DoIP payload type (e.g., 0x8001 for Diagnostic Message).
-     * @param[in] data          Payload data pointer.
+     * @param[in] data          Payload data pointer (valid only during the call).
      * @param[in] len           Payload length in bytes.
      * @param[in] user_ctx      Context pointer passed in DoIP_Config_t::user_context.
      */
@@ -131,6 +139,20 @@ typedef struct {
     int (*on_frame_received)(int client_fd,
                              uint16_t pt, const uint8_t *payload, uint32_t plen,
                              void *user_ctx);
+
+    /** ECU logical address; 0 = compiled-in DOIP_ECU_LOGICAL_ADDRESS.
+     *  Valid: 0x0001-0x0DFF, 0x1000-0x7FFF, 0x8000-0xDFFF. */
+    uint16_t logical_address;
+
+    /** Functional (group) address the ECU also answers to;
+     *  0 = compiled-in DOIP_FUNCTIONAL_LOGICAL_ADDRESS (0xE400). */
+    uint16_t functional_address;
+
+    /** UDP + TCP port; 0 = compiled-in DOIP_TCP_PORT (13400). */
+    uint16_t port;
+
+    /** Fault injection active from start-up; all-zero = none. See DoIP_SetFaults(). */
+    DoIP_FaultConfig_t faults;
 
 #if DOIP_ENABLE_TLS
     /** TLS server certificate, key, and optional CA bundle. */
@@ -213,10 +235,49 @@ DOIP_API void DoIP_SetLogLevel(DoIP_Handle_t *handle, uint8_t level);
 /**
  * @brief Enable or disable periodic UDP Vehicle Announcements at runtime.
  *
+ * Announcements are on by default (DOIP_ENABLE_PERIODIC_ANNOUNCE): a burst of
+ * DOIP_ANNOUNCE_COUNT_MAX, DOIP_ANNOUNCE_INTERVAL_MS apart, after DoIP_Init().
+ * Disabling stops a running burst; enabling starts a new complete burst on the
+ * next DoIP_Tick(). May be called before DoIP_Init() to start silent.
+ *
  * @param[in,out] handle  Handle returned by DoIP_Create().
- * @param[in]     enable  @c true to start announcements, @c false to stop.
+ * @param[in]     enable  @c true to announce (again), @c false to stop.
  */
 DOIP_API void DoIP_EnablePeriodicAnnounce(DoIP_Handle_t *handle, bool enable);
+
+/**
+ * @brief Add or replace a data identifier answered by ReadDataByIdentifier (0x22).
+ *
+ * Lets the ECU serve extra DIDs without an on_uds_request hook. The data is
+ * copied. Up to UDS_DID_TABLE_SIZE DIDs of up to UDS_DID_DATA_MAX bytes each;
+ * they belong to the handle and survive DoIP_DeInit(). May be called before
+ * or after DoIP_Init().
+ *
+ * The identity DIDs 0xF190 (VIN), 0xF186, 0xF182 and 0xF18C cannot be
+ * registered here: they come from DoIP_Config_t::ecu_identity.
+ *
+ * @param[in,out] handle    Handle returned by DoIP_Create().
+ * @param[in]     did       Data identifier.
+ * @param[in]     data      Value (1 .. UDS_DID_DATA_MAX bytes).
+ * @param[in]     len       Length of @p data.
+ * @param[in]     writable  Also accept WriteDataByIdentifier (0x2E) for this DID,
+ *                          under the same session and security conditions as
+ *                          the built-in writable DIDs.
+ * @retval  0  Registered.
+ * @retval -1  Invalid argument, identity DID, or table full.
+ */
+DOIP_API int DoIP_SetDid(DoIP_Handle_t *handle, uint16_t did,
+                         const void *data, uint16_t len, bool writable);
+
+/**
+ * @brief Change fault injection while the simulator is running.
+ *
+ * @param[in,out] handle  Initialised handle.
+ * @param[in]     faults  New settings, or NULL to clear all faults.
+ * @retval  0  Applied.
+ * @retval -1  @p handle is NULL or not initialised.
+ */
+DOIP_API int DoIP_SetFaults(DoIP_Handle_t *handle, const DoIP_FaultConfig_t *faults);
 
 /** @} */ /* end of doip_server_api group */
 

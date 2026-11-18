@@ -41,7 +41,7 @@ All four transport extensions are **disabled by default** and have zero impact o
 
 | Feature | Flag | Description |
 |---------|------|-------------|
-| **TLS/DTLS** | `DOIP_TLS=1` | OpenSSL TLS 1.2+ on TCP; DTLS 1.2 on UDP |
+| **TLS** | `DOIP_TLS=1` | OpenSSL TLS 1.2+ on TCP (UDP discovery stays unencrypted) |
 | **IPv6** | `DOIP_IPV6=1` | Dual-stack `AF_INET6` sockets, `ff02::1` multicast |
 | **ISO-TP** | `DOIP_ISOTP=1` | ISO 15765-2 segmentation/reassembly of UDS payloads |
 | **Async API** | (always on) | `on_client_connect/disconnect/frame_received` callbacks in `DoIP_Config_t` |
@@ -51,11 +51,20 @@ All four transport extensions are **disabled by default** and have zero impact o
 ### Supported UDS Services (ISO 14229)
 
 - `0x10` Session Control
-- `0x11` ECU Reset
-- `0x22` Read Data By Identifier (VIN, SW Version, Serial Number…)
-- `0x2E` Write Data By Identifier
+- `0x11` ECU Reset — reset types `0x01`–`0x03`; returns the client to the default session
+- `0x14` Clear Diagnostic Information — `FFFFFF` clears all DTCs, or one specific DTC
+- `0x19` Read DTC Information — `01` count by status mask, `02` list by status mask, `0A` all supported; DTC table in `UDS_DTC_TABLE`
+- `0x22` Read Data By Identifier (VIN, SW Version, System Name, Serial Number, plus any DIDs registered with `DoIP_SetDid()` / `--did`) — several DIDs per request
+- `0x27` Security Access level 1 — `27 01` returns a 4-byte seed, `27 02` expects `seed XOR UDS_SECURITY_KEY_MASK`; three wrong keys lock the client out for `UDS_SECURITY_LOCKOUT_MS`
+- `0x2E` Write Data By Identifier — VIN (`0xF190`, exactly 17 bytes), system name (`0xF186`), serial number (`0xF18C`). A written VIN is also used in UDP vehicle announcements and ID responses. Registered DIDs marked writable (`--did-rw`) are accepted too
 - `0x31` Routine Control
 - `0x3E` Tester Present
+- Suppress-positive-response bit (`0x80` in the sub-function byte) honoured for sub-function services: the service runs, the DoIP ACK is sent, and no positive UDS response follows (e.g. `3E 80`); negative responses are still sent
+- Session gating: `0x27`, `0x28`, `0x2E`, `0x31`, `0x34`, `0x36`, `0x37`, `0x85` answer NRC `0x7F` in the default session (`UDS_NON_DEFAULT_SESSION_SIDS`)
+- Security gating: `0x2E` answers NRC `0x33` until Security Access is unlocked (`UDS_SECURED_SIDS`)
+
+Typical write sequence: `10 03` → `27 01` → `27 02 <key>` → `2E F1 90 <17-byte VIN>`.
+
 - Auto-response mode for unsupported SIDs
 
 ---
@@ -134,7 +143,7 @@ DoIP_Tick() [doip_api.c]
 │   ├── doip_frame.c/.h          # DoIP frame serialization / deserialization
 │   ├── doip_log.c/.h            # Thread-safe logging (colors, timestamps, modules)
 │   ├── doip_types.h             # Protocol structs & payload type constants
-│   └── doip_det.c               # Development Error Tracer stub
+│   └── doip_context.h           # Internal: the per-instance state behind DoIP_Handle_t
 │
 ├── transport/
 │   ├── doip_udp.c/.h            # UDP: vehicle announcements, VIN/EID, IPv6 dual-stack
@@ -224,7 +233,7 @@ Each feature is activated by a Makefile variable. They can be combined freely.
 # IPv6 dual-stack sockets (TCP + UDP)
 make DOIP_IPV6=1
 
-# TLS 1.2+ on TCP / DTLS 1.2 on UDP (requires OpenSSL)
+# TLS 1.2+ on TCP (requires OpenSSL)
 make DOIP_TLS=1
 
 # ISO-TP segmentation / reassembly (ISO 15765-2)
@@ -244,8 +253,19 @@ These flags inject the matching `-D` defines and automatically add the required 
 ## Running Tests
 
 ```bash
-# All unit tests (frame + UDS + ISO-TP) + integration tests — fast, < 15 s
+# Unit (frame + UDS + ISO-TP) + integration + end-to-end tests — fast, < 30 s
 make test
+
+# The same, with sanitizers
+make test SANITIZE="-fsanitize=address,undefined"
+
+# End-to-end: launches the real simulator binary and talks DoIP to it (needs python3)
+make test-e2e
+
+# Feature paths: ISO-TP, TLS and IPv6 dual-stack servers, each built with its
+# own define (needs OpenSSL headers and the openssl tool; generates tests/certs/;
+# the IPv6 part skips itself on hosts without ::1)
+make test-features
 
 # ISO-TP unit tests only (no sockets, instant)
 make test-isotp
@@ -255,15 +275,52 @@ make test-server && ./test-server
 
 # Alive Check timing tests (~22 s — exercises idle timeout + disconnect)
 make test-alive && ./test-alive-bin
+
+# Two instances on two threads under ThreadSanitizer
+make test-tsan
+
+# Install into build/install-check and build + run a program against that tree only
+make test-install
 ```
 
-**Test counts on master (baseline):**
-- 10 frame unit tests
-- 18 UDS unit tests
-- 14 ISO-TP unit tests (`make DOIP_ISOTP=1 test-isotp`)
-- 11 server integration tests
-- 3 alive check timing tests
-- **Total: 56 tests**
+**Test suites:**
+
+| Suite | Target | Tests |
+|-------|--------|-------|
+| Frame unit tests | `make test` | 10 |
+| UDS unit tests | `make test` | 39 |
+| ISO-TP unit tests | `make test` | 14 |
+| Server integration tests (in-process server, port 23400) | `make test` | 27 |
+| Two instances in one process (ports 23410 / 23411); also `make test-tsan` | `make test` | 6 |
+| End-to-end tests of the binary (port 24400) | `make test` | 12 |
+| Alive-check timing tests | `make test-alive` | 3 |
+| ISO-TP server integration tests | `make test-features` | 8 |
+| TLS server integration tests | `make test-features` | 9 |
+| Integration suite against the IPv6 dual-stack server | `make test-features` | 27 |
+
+`make test` always tests the default configuration (plus `DOIP_2019=1` if given); the `DOIP_TLS` / `DOIP_IPV6` / `DOIP_ISOTP` flags only affect the simulator and library build. The feature code paths are covered by `make test-features`, where each test binary is built with its own define.
+
+### Fuzzing
+
+```bash
+# Any compiler: ASan/UBSan + a built-in mutator, 200000 inputs per target (a few seconds, deterministic)
+make fuzz
+make fuzz FUZZ_RUNS=5000000        # longer
+FUZZ_SEED=7 ./fuzz-uds             # another deterministic sequence
+
+# clang: coverage-guided libFuzzer binaries - run each as long as you like
+make clean && make fuzz FUZZ_ENGINE=libfuzzer
+./fuzz-tcp -max_total_time=300
+```
+
+| Target | What it feeds |
+|--------|---------------|
+| `fuzz-uds` | Sequences of UDS requests into the service layer (all handlers, session and security state) |
+| `fuzz-isotp` | N-PDUs into ISO-TP reassembly, plus a segment-and-reassemble round trip |
+| `fuzz-tcp` | A byte stream, split into arbitrary reads, into the TCP server's frame handling: header validation, reassembly, routing activation, diagnostic dispatch |
+| `fuzz-tcp-isotp` | The same with ISO-TP enabled |
+
+When a sanitizer aborts, the built-in mutator saves the input as `crash-<target>.bin`; replay it with `./fuzz-uds crash-fuzz-uds.bin`.
 
 ---
 
@@ -275,9 +332,16 @@ make test-alive && ./test-alive-bin
 # Default build (all features off):
 ./doip_ecu_sim
 
+# Override identity / addressing without recompiling:
+./doip_ecu_sim --vin WAUZZZ8V0JA000001 --address 0x2002 --functional-address 0xE401 \
+               --port 14400 --log-level 2
+# Extra data identifiers: text, or hex bytes with 0x; --did-rw makes one writable
+./doip_ecu_sim --did F187=PN-1234 --did-rw F1A0=0x0102AB
+./doip_ecu_sim --help
+
 # With TLS:
 make clean && make DOIP_TLS=1
-./doip_ecu_sim   # configure cert/key via DoIP_Config_t::tls in main.c
+./doip_ecu_sim --tls-cert server.crt --tls-key server.key   # both are required in a TLS build
 
 # With IPv6:
 make clean && make DOIP_IPV6=1
@@ -294,11 +358,10 @@ make clean && make DOIP_IPV6=1
 ./doip_client_demo ::1
 ```
 
-### Terminal 2 — Python Integration Tests
+### End-to-end tests of the binary
 
 ```bash
-python3 test/test_routing_act.py
-python3 test/test_multi_client.py
+make test-e2e    # builds ./test-sim, launches it with CLI flags, drives it over sockets (Python 3 stdlib)
 ```
 
 ---
@@ -315,14 +378,39 @@ void           DoIP_DeInit(DoIP_Handle_t *handle);
 void           DoIP_Destroy(DoIP_Handle_t *handle);
 void           DoIP_SetLogLevel(DoIP_Handle_t *handle, uint8_t level);
 void           DoIP_EnablePeriodicAnnounce(DoIP_Handle_t *handle, bool enable);
+int            DoIP_SetFaults(DoIP_Handle_t *handle, const DoIP_FaultConfig_t *faults);  // NULL clears
+int            DoIP_SetDid(DoIP_Handle_t *handle, uint16_t did,
+                           const void *data, uint16_t len, bool writable);
 ```
+
+`DoIP_SetDid()` registers an extra data identifier for ReadDataByIdentifier without writing a hook: up to `UDS_DID_TABLE_SIZE` (16) DIDs of up to `UDS_DID_DATA_MAX` (64) bytes per instance, optionally writable with `0x2E`. For anything dynamic (live values, larger data) use the `on_uds_request` hook.
+
+### Several ECUs in one process
+
+A handle is a complete, independent simulator: its own sockets, testers, identity, sessions, security state, DTC memory and fault settings. Nothing is shared except the logger.
+
+```c
+DoIP_Handle_t *engine = DoIP_Create(), *gearbox = DoIP_Create();
+
+DoIP_Config_t cfg = {0};
+cfg.ecu_identity = &engine_identity;   cfg.logical_address = 0x1001;  cfg.port = 13400;
+DoIP_Init(engine, &cfg);
+cfg.ecu_identity = &gearbox_identity;  cfg.logical_address = 0x1002;  cfg.port = 13401;
+DoIP_Init(gearbox, &cfg);
+
+for (;;) { DoIP_Tick(engine); DoIP_Tick(gearbox); }   // or one thread per instance
+```
+
+- Every instance listens on all local addresses, so each needs its own port. A second instance on a port that is taken fails in `DoIP_Init()` and leaves nothing bound.
+- Calls on different handles may run on different threads at the same time; calls on one handle are serialised by a per-handle lock. Do not call the API of a handle from inside its own callbacks.
+- Logging is process-wide: the first initialised instance sets the level and the log file, later ones share them, and `DoIP_SetLogLevel()` affects all.
 
 ### `DoIP_Config_t` — Full Field Reference
 
 ```c
 typedef struct {
     /* ── Logging ───────────────────────────────────────────────── */
-    uint8_t     log_level;           // 0=ERROR … 4=VERBOSE
+    uint8_t     log_level;           // 0=ERROR … 4=VERBOSE (taken as given; NULL config = INFO)
     const char *log_file_path;       // NULL = console only
 
     /* ── Timing ────────────────────────────────────────────────── */
@@ -330,8 +418,13 @@ typedef struct {
 
     /* ── State / message callbacks ─────────────────────────────── */
     void (*on_state_change)(uint8_t old, uint8_t new, void *ctx);
+                          // FSM: IDLE -> ROUTING_ACTIVE on routing activation,
+                          // -> DIAG_SESSION on a non-default UDS session, back to
+                          // ROUTING_ACTIVE in the default session, -> IDLE when
+                          // S3 expires or the last activated tester disconnects
     void (*on_rx_message)(uint16_t pt, const uint8_t *data,
                           uint32_t len, void *ctx);
+                          // every DoIP frame received over TCP or UDP
 
     /* ── ECU identity (NULL = compile-time defaults) ────────────── */
     const DoIP_EcuIdentity_t *ecu_identity;
@@ -354,6 +447,14 @@ typedef struct {
 
     void *user_context;           // forwarded to all callbacks above
 
+    /* ── Addressing (0 = compiled-in default) ───────────────────── */
+    uint16_t logical_address;     // ECU address            (DOIP_ECU_LOGICAL_ADDRESS, 0x1003)
+    uint16_t functional_address;  // functional group       (DOIP_FUNCTIONAL_LOGICAL_ADDRESS, 0xE400)
+    uint16_t port;                // UDP + TCP port         (DOIP_TCP_PORT, 13400)
+
+    /* ── Fault injection (all-zero = none) ──────────────────────── */
+    DoIP_FaultConfig_t faults;    // see "Fault injection"; change later with DoIP_SetFaults()
+
 #if DOIP_ENABLE_TLS
     /* ── TLS configuration (DOIP_TLS=1 only) ───────────────────── */
     struct {
@@ -369,6 +470,22 @@ typedef struct {
 ### Client API (`client/doip_client.h`)
 
 ```c
+// Configuration (zero fields get defaults)
+typedef struct {
+    uint16_t tester_logical_addr;   // default DOIP_TESTER_LOGICAL_ADDRESS
+    uint32_t connect_timeout_ms;
+    uint32_t response_timeout_ms;
+    uint32_t routing_timeout_ms;
+#if DOIP_ENABLE_TLS                 // make DOIP_TLS=1
+    struct {
+        bool        enable;         // TLS 1.2+ on the TCP connection
+        const char *ca_file;        // trust anchor for the server certificate
+        const char *cert_file;      // optional client certificate (mutual TLS)
+        const char *key_file;
+    } tls;                          // failed handshake -> DOIP_CLIENT_ERR_SOCKET
+#endif
+} DoIP_ClientConfig_t;
+
 // Lifecycle
 DoIP_Client_t*      DoIP_Client_Create(void);
 DoIP_ClientStatus_t DoIP_Client_Init(DoIP_Client_t *c, const DoIP_ClientConfig_t *cfg);
@@ -395,10 +512,17 @@ DoIP_ClientStatus_t DoIP_Client_Transact(DoIP_Client_t *c, uint16_t target_addr,
                                           uint8_t *resp, uint16_t resp_size,
                                           uint16_t *resp_len_out);
 
+// With DOIP_ISOTP=1 the client segments requests into ISO-TP N-PDUs (SF, or FF +
+// CFs after the server's Flow Control, honouring BS/STmin; FS=Overflow ->
+// ERR_REJECTED) and reassembles responses (answering an FF with FC CTS).
+// Callers still pass and receive plain UDS bytes (up to 4095).
+
 // State queries
 bool DoIP_Client_IsConnected(const DoIP_Client_t *c);
 bool DoIP_Client_IsRoutingActive(const DoIP_Client_t *c);
 ```
+
+`DoIP_Client_GetLastNackCode(c)` returns the code behind an `ERR_NACK` (for example `0x03` = unknown target address).
 
 Return codes: `DOIP_CLIENT_OK (0)`, `ERR_PARAM (-1)`, `ERR_SOCKET (-2)`, `ERR_TIMEOUT (-3)`, `ERR_NACK (-4)`, `ERR_REJECTED (-5)`, `ERR_NOT_READY (-6)`, `ERR_IO (-7)`
 
@@ -418,7 +542,7 @@ All compile-time configuration lives in the `config/` headers.
 
 ```c
 /* Protocol version */
-#define DOIP_PROTOCOL_VERSION_SELECTED  DOIP_VERSION_2012   // or DOIP_VERSION_2019
+#define DOIP_PROTOCOL_VERSION_SELECTED  DOIP_VERSION_2012   // or DOIP_VERSION_2019 (make DOIP_2019=1)
 
 /* Addressing */
 #define DOIP_ECU_LOGICAL_ADDRESS        0x1003U
@@ -435,6 +559,12 @@ All compile-time configuration lives in the `config/` headers.
 #define DOIP_ROUTING_ACTIVATION_TIMEOUT_MS  5000U
 #define DOIP_ALIVE_CHECK_INTERVAL_MS    5000U   // idle before probe
 #define DOIP_ALIVE_CHECK_TIMEOUT_MS     2000U   // disconnect if no reply
+
+/* ── Protocol toggles (each overridable with -D, e.g. CFLAGS+=-DDOIP_SUPPORT_EID_REQUEST=false) ── */
+#define DOIP_SUPPORT_VIN_REQUEST        true    // answer Vehicle ID requests (PT 0x0001, 0x0003); false = ignored
+#define DOIP_SUPPORT_EID_REQUEST        true    // answer Vehicle ID request with EID (PT 0x0002); false = ignored
+#define DOIP_SUPPORT_ALIVE_CHECK        true    // server probes idle testers; false = no probe/timeout
+                                                // (a tester's own Alive Check request is always answered)
 
 /* ── Optional feature toggles (also settable via Makefile) ─────── */
 /* IPv6 — dual-stack AF_INET6; build with: make DOIP_IPV6=1        */
@@ -497,7 +627,7 @@ config.on_frame_received    = my_frame_cb;
 
 ---
 
-### TLS / DTLS (`make DOIP_TLS=1`)
+### TLS (`make DOIP_TLS=1`)
 
 Requires OpenSSL ≥ 1.1.1 (`sudo apt install libssl-dev`).
 
@@ -509,9 +639,13 @@ openssl req -x509 -newkey rsa:2048 -nodes \
     -subj "/CN=doip-test" -days 365
 
 make clean && make DOIP_TLS=1
+
+./doip_ecu_sim --tls-cert tests/certs/server.crt --tls-key tests/certs/server.key
+# mutual TLS: also require a client certificate signed by this CA
+./doip_ecu_sim --tls-cert server.crt --tls-key server.key --tls-ca ca.crt --tls-verify-peer
 ```
 
-Configure in `main.c` before calling `DoIP_Init()`:
+Through the API, set the same values before calling `DoIP_Init()`:
 
 ```c
 DoIP_Config_t config = {0};
@@ -522,7 +656,15 @@ config.tls.verify_peer = false;
 DoIP_Init(handle, &config);
 ```
 
-Internals: `doip_tcp_tls_config()` is called by `DoIP_Init()` before the FSM opens sockets. At accept time, `doip_tls_accept()` performs the TLS handshake and returns a `doip_io_t` whose vtable calls `SSL_read`/`SSL_write` — the rest of the stack sees no difference.
+Internals: the TCP server reads the certificate paths from the instance's configuration when `DoIP_Init()` opens its sockets. At accept time `doip_tls_start()` creates the SSL object and the handshake is then driven non-blockingly from the `select()` loop (`doip_tls_continue()`); once it completes, `doip_tls_io()` yields a `doip_io_t` whose vtable calls `SSL_read`/`SSL_write` — the rest of the stack sees no difference.
+
+Limits to know about:
+
+- In a TLS build every TCP client must use TLS on the same port; cleartext clients are dropped.
+- UDP (vehicle announcement / identification) is not encrypted. `doip_dtls_wrap()` exists in `doip_tls.c` but is not wired into the UDP path.
+- The handshake is non-blocking: a client that connects and stays silent does not delay other clients, but is dropped after `DOIP_TLS_HANDSHAKE_TIMEOUT_S` (2 s). `on_client_connect` fires when the handshake completes.
+- The client library speaks TLS when built with `DOIP_TLS=1` (see the client API below); `doip_client_demo` has no TLS options and always connects in cleartext.
+- `doip_tls_init()` sets `SIGPIPE` to ignored for the process, because OpenSSL writes with plain `write()`.
 
 ---
 
@@ -558,9 +700,9 @@ make DOIP_ISOTP=1 test-isotp   # run 14 unit tests, no sockets
 | Type | PCI nibble | Direction | Description |
 |------|-----------|-----------|-------------|
 | SF (Single Frame) | `0x0` | RX + TX | Payload ≤ 7 bytes, no handshake |
-| FF (First Frame) | `0x1` | RX | Start of multi-frame; triggers FC CTS |
-| CF (Consecutive Frame) | `0x2` | RX | Continuation; sequence number validated |
-| FC (Flow Control) | `0x3` | TX | Emitted by receiver after FF (CTS / overflow) |
+| FF (First Frame) | `0x1` | RX + TX | Start of multi-frame; received FF triggers FC CTS |
+| CF (Consecutive Frame) | `0x2` | RX + TX | Continuation; sequence number validated |
+| FC (Flow Control) | `0x3` | RX + TX | Sent after a received FF (CTS / overflow); received FC paces our own response |
 
 **RX reassembly API:**
 
@@ -584,6 +726,15 @@ int doip_isotp_tx(doip_isotp_ctx_t *ctx,
 ```
 
 Each segment is exactly 8 bytes, padded with `0xCC` per ISO 15765-2.
+
+**Flow control on responses.** A UDS response longer than 7 bytes is copied into the client's ISO-TP context and sent as a First Frame; the server then waits for the tester's Flow Control (sent as a DoIP diagnostic message whose first byte is `0x3X`). The Consecutive Frames are sent from `doip_tcp_tick()` (about every 1 ms, no sleeping):
+
+- `FS=0` (CTS): honours the block size (`BS=0` means no limit; another FC is awaited after each block) and STmin (`0x00`-`0x7F` ms; `0xF1`-`0xF9` = 100-900 us, treated as 0 because ticks are 1 ms; reserved values = 127 ms).
+- `FS=1` (Wait): keeps waiting, restarting the `DOIP_ISOTP_N_BS_MS` timer.
+- `FS=2` (Overflow), or no FC within `DOIP_ISOTP_N_BS_MS`: the response is abandoned with a warning; the connection stays open.
+- While a segmented response is in progress, a new request from that tester is answered with NRC `0x21` (busy, repeat request).
+
+Limits: one segmented response per client at a time; the receive side always answers a FF with `CTS, BS=0, STmin=DOIP_ISOTP_STMIN_MS`.
 
 ---
 
@@ -642,7 +793,7 @@ config.user_context   = &my_nvm_handle;
 ```c
 #define UDS_SUPPORT_SESSION_CONTROL   1   /* 0x10 */
 #define UDS_SUPPORT_READ_DATA         1   /* 0x22 */
-#define UDS_SUPPORT_WRITE_DATA        0   /* 0x2E — disabled by default */
+#define UDS_SUPPORT_WRITE_DATA        1   /* 0x2E */
 #define UDS_SUPPORT_TESTER_PRESENT    1   /* 0x3E */
 #define UDS_SUPPORT_ECU_RESET         1   /* 0x11 */
 #define UDS_SUPPORT_ROUTINE_CONTROL   1   /* 0x31 */
@@ -669,7 +820,60 @@ All UDP request/response exchanges (VIN, Entity Status, Power Mode) are sent **u
 | Condition | NACK code |
 |-----------|-----------|
 | Invalid sync pattern | `0x00` INVALID_PATTERN |
-| Unknown payload type | `0x02` UNKNOWN_PAYLOAD_TYPE |
+| Unknown payload type | `0x01` UNKNOWN_PAYLOAD_TYPE |
+
+### Vehicle identification (UDP)
+
+| Payload type | Meaning | Behaviour |
+|--------------|---------|-----------|
+| `0x0001` | Vehicle ID request | Always answered |
+| `0x0002` | Vehicle ID request with EID (6 bytes) | Answered only if the EID matches |
+| `0x0003` | Vehicle ID request with VIN (17 bytes) | Answered only if the VIN matches |
+| `0x0004` | Vehicle announcement / ID response | 33 bytes: VIN(17) LA(2) EID(6) GID(6) further-action(1) sync-status(1) |
+
+Requests using the default protocol version `0xFF`/`0x00` are accepted for these three request types.
+
+### Routing activation
+
+The response is 9 bytes: tester address(2), entity address(2), code(1), reserved(4). A denied activation closes the socket.
+
+| Condition | Response code |
+|-----------|---------------|
+| Source address outside `0x0E00`–`0x0FFF` | `0x00` unknown source address |
+| Different source address on an already-activated socket | `0x02` |
+| Activation type other than `0x00` / `0x01` | `0x06` unsupported activation type |
+| Otherwise (including re-activation with the same address) | `0x10` success |
+
+### Diagnostic message NACK (PT 0x8003)
+
+| Condition | NACK code |
+|-----------|-----------|
+| Routing not activated, or source address differs from the activated one | `0x02` invalid source address |
+| Target address is not `DOIP_ECU_LOGICAL_ADDRESS` | `0x03` unknown target address |
+
+### Functional addressing
+
+The ECU also answers diagnostic messages sent to its functional group address (`DOIP_FUNCTIONAL_LOGICAL_ADDRESS`, default `0xE400`; `DoIP_Config_t::functional_address` or `--functional-address` at runtime).
+
+- The DoIP ACK carries the functional address as its source; the UDS response comes from the ECU's own logical address.
+- As ISO 14229-1 requires, negative responses with NRC `0x11`, `0x12`, `0x31`, `0x7E` and `0x7F` are not sent for functional requests. All other responses are.
+
+### Fault injection
+
+Make the simulator misbehave on purpose to test a tester's error handling. Set `DoIP_Config_t::faults` at init, call `DoIP_SetFaults(handle, &faults)` at runtime (`NULL` clears), or use the CLI flags.
+
+| Field / flag | Effect |
+|--------------|--------|
+| `response_delay_ms` / `--response-delay <ms>` | Delays every UDS response. Above `UDS_P2_SERVER_MS` the ECU first sends `7F <sid> 78` (response pending), repeats it every `UDS_P2_STAR_SERVER_MS / 2`, and answers further requests with NRC `0x21` until the real response goes out |
+| `drop_diag_ack` / `--drop-ack` | No DoIP Diagnostic ACK (`0x8002`) |
+| `drop_response` / `--drop-response` | UDS responses are swallowed |
+| `force_diag_nack` / `--force-nack <code>` | Every diagnostic message is rejected with Diagnostic NACK (`0x8003`) and this code |
+
+The bundled client waits through `7F xx 78` automatically.
+
+### Protocol version
+
+`DOIP_VERSION_2012` sends header version `0x02`/`0xFD`; `DOIP_VERSION_2019` (or `make DOIP_2019=1`) sends `0x03`/`0xFC`. Logical addresses are 16-bit in both.
 
 ### Alive Check Timeline
 
@@ -733,7 +937,7 @@ SONAME versioning: `libdoip.so.1.0.0` → `libdoip.so.1` → `libdoip.so`
 | Client gets `ERR_TIMEOUT (-3)` | Server not running or wrong IP | Start simulator first; check port 13400 firewall |
 | Client gets `ERR_REJECTED (-5)` | Routing activation rejected | Check `DOIP_TESTER_LOGICAL_ADDRESS` matches server |
 | UDP discovery returns no result | Broadcast blocked | Pass IP directly: `./doip_client_demo 127.0.0.1` |
-| TLS handshake fails | cert/key not configured | Call `doip_tcp_tls_config()` before `DoIP_Init()` |
+| TLS build exits at start-up | cert/key not configured | Pass `--tls-cert` / `--tls-key`, or set `DoIP_Config_t::tls` before `DoIP_Init()` |
 | TLS link fails: `-lssl not found` | OpenSSL missing | `sudo apt install libssl-dev` |
 | IPv6 bind fails | Kernel IPv6 module not loaded | `sudo modprobe ipv6` or build without `DOIP_IPV6=1` |
 | `make docs` fails: `doxygen: No such file` | Doxygen not installed | `sudo apt install doxygen` |

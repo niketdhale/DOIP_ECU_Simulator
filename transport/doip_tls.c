@@ -16,33 +16,43 @@
 #include <errno.h>
 #include <unistd.h>
 #include <stdint.h>   /* intptr_t */
+#include <signal.h>
 
 /* ---------------------------------------------------------------------------
  * TLS vtable functions — ctx holds a malloc'd SSL* pointer
  * -------------------------------------------------------------------------*/
 
+/* Map an SSL_read/SSL_write result <= 0 onto the recv()/send() contract the
+ * transport expects: 0 = orderly close, -1 with errno EAGAIN = try again,
+ * -1 with any other errno = dead connection.  errno is always set, so a stale
+ * EAGAIN from an unrelated call can never make a broken session look idle. */
+static ssize_t tls_result(SSL *ssl, int n)
+{
+    switch (SSL_get_error(ssl, n)) {
+        case SSL_ERROR_WANT_READ:
+        case SSL_ERROR_WANT_WRITE:  errno = EAGAIN;     return -1;
+        case SSL_ERROR_ZERO_RETURN:                     return 0;   /* close_notify */
+        default:                    errno = ECONNRESET; return -1;
+    }
+}
+
 static ssize_t tls_read(void *ctx, void *buf, size_t len)
 {
     SSL *ssl = (SSL *)ctx;
+    ERR_clear_error();   /* SSL_get_error() needs an empty error queue */
     int n = SSL_read(ssl, buf, (int)len);
-    if (n > 0) return (ssize_t)n;
-    int err = SSL_get_error(ssl, n);
-    if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
-        errno = EAGAIN;
-    }
-    return -1;
+    return (n > 0) ? (ssize_t)n : tls_result(ssl, n);
 }
 
 static ssize_t tls_write(void *ctx, const void *buf, size_t len)
 {
     SSL *ssl = (SSL *)ctx;
+    ERR_clear_error();
     int n = SSL_write(ssl, buf, (int)len);
     if (n > 0) return (ssize_t)n;
-    int err = SSL_get_error(ssl, n);
-    if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
-        errno = EAGAIN;
-    }
-    return -1;
+    ssize_t rc = tls_result(ssl, n);
+    if (rc == 0) { errno = ECONNRESET; rc = -1; }   /* peer already closed: not a successful write */
+    return rc;
 }
 
 static int tls_getfd(void *ctx)
@@ -81,6 +91,10 @@ int doip_tls_init(doip_tls_server_t *s,
                    const char *ca_file,   bool verify_peer)
 {
     if (!s || !cert_file || !key_file) return -1;
+
+    /* OpenSSL writes with plain write(): without this, a tester that
+     * disconnects while a response is being sent kills the process. */
+    signal(SIGPIPE, SIG_IGN);
 
     /* One-time OpenSSL initialisation (idempotent in OpenSSL 1.1+) */
     SSL_library_init();
@@ -139,44 +153,58 @@ void doip_tls_deinit(doip_tls_server_t *s)
     }
 }
 
-doip_io_t doip_tls_accept(doip_tls_server_t *s, int client_fd)
+SSL *doip_tls_start(doip_tls_server_t *s, int client_fd)
 {
-    doip_io_t io;
-    memset(&io, 0, sizeof(io));
-
-    if (!s || !s->ctx || client_fd < 0) return io;
+    if (!s || !s->ctx || client_fd < 0) return NULL;
 
     SSL *ssl = SSL_new(s->ctx);
     if (!ssl) {
         ERR_print_errors_fp(stderr);
-        return io;
+        return NULL;
     }
-
     if (SSL_set_fd(ssl, client_fd) != 1) {
         SSL_free(ssl);
-        return io;
+        return NULL;
     }
+    SSL_set_accept_state(ssl);
+    return ssl;
+}
 
+int doip_tls_continue(SSL *ssl)
+{
+    ERR_clear_error();
     int rc = SSL_accept(ssl);
-    if (rc != 1) {
-        int err = SSL_get_error(ssl, rc);
-        LOG_ERROR(DOIP_LOG_MODULE_TCP,
-                  "TLS handshake failed (fd=%d, err=%d)", client_fd, err);
-        ERR_print_errors_fp(stderr);
-        SSL_free(ssl);
-        return io;
+    if (rc == 1) {
+        LOG_INFO(DOIP_LOG_MODULE_TCP, "TLS handshake OK (fd=%d, cipher=%s)",
+                 SSL_get_fd(ssl), SSL_get_cipher(ssl));
+        return 1;
     }
+    int err = SSL_get_error(ssl, rc);
+    if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) return 0;
+    LOG_ERROR(DOIP_LOG_MODULE_TCP, "TLS handshake failed (fd=%d, err=%d)",
+              SSL_get_fd(ssl), err);
+    ERR_print_errors_fp(stderr);
+    return -1;
+}
 
-    LOG_INFO(DOIP_LOG_MODULE_TCP,
-             "TLS handshake OK (fd=%d, cipher=%s)",
-             client_fd, SSL_get_cipher(ssl));
-
+doip_io_t doip_tls_io(SSL *ssl)
+{
+    doip_io_t io;
+    memset(&io, 0, sizeof(io));
     io.ctx   = (void *)ssl;
     io.read  = tls_read;
     io.write = tls_write;
     io.getfd = tls_getfd;
     io.close = tls_close;
     return io;
+}
+
+void doip_tls_abort(SSL *ssl)
+{
+    if (!ssl) return;
+    int fd = SSL_get_fd(ssl);
+    SSL_free(ssl);
+    if (fd >= 0) close(fd);
 }
 
 doip_io_t doip_dtls_wrap(doip_tls_server_t *s, int udp_fd,

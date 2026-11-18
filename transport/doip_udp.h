@@ -3,14 +3,16 @@
 
 #include "config/doip_config.h"
 #include "core/doip_types.h"
+#include "doip_api.h"          /* DoIP_Handle_t */
 #include <stdint.h>
 #include <stdbool.h>
 
-int doip_udp_init(const DoIP_EcuIdentity_t *identity);
-int doip_udp_poll(DoIP_RxIndication rx_cb);
-void doip_udp_deinit(void);
+/* The socket and announcement state live in the instance (core/doip_context.h) */
+int  doip_udp_init(DoIP_Handle_t *h);
+int  doip_udp_poll(DoIP_Handle_t *h);
+void doip_udp_deinit(DoIP_Handle_t *h);
 
 /* Periodic Announcement */
-void doip_udp_tick(uint32_t now_ms);
+void doip_udp_tick(DoIP_Handle_t *h, uint32_t now_ms);
 
 #endif /* DOIP_UDP_H */

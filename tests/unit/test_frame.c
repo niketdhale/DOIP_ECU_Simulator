@@ -3,7 +3,7 @@
  * @brief Unit tests for core/doip_frame.c — serialize / deserialize only.
  *
  * No sockets are opened. Every test operates on raw byte buffers.
- * Links: unity.c  doip_frame.c  doip_log.c  doip_det.c
+ * Links: unity.c  doip_frame.c  doip_log.c
  *
  * Run: ./test-frame
  */

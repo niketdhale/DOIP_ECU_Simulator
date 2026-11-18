@@ -13,11 +13,21 @@ void mock_fsm_reset(void) {
 }
 
 /* Stub: record call but do nothing else (no socket binding) */
-void DoIP_Fsm_OnUdsSessionChange(uint8_t session_id) {
+void DoIP_Fsm_OnUdsSessionChange(DoIP_Handle_t *h, uint8_t session_id) {
+    (void)h;
     g_mock_session_change_calls++;
     g_mock_last_session_id = session_id;
 }
 
-void DoIP_Fsm_OnDiagnosticActivity(void) {
+void DoIP_Fsm_OnDiagnosticActivity(DoIP_Handle_t *h) {
+    (void)h;
     g_mock_diag_activity_calls++;
+}
+
+void DoIP_Fsm_OnRoutingActivation(DoIP_Handle_t *h, bool activated) {
+    (void)h; (void)activated;
+}
+
+void DoIP_Fsm_OnTcpDisconnect(DoIP_Handle_t *h) {
+    (void)h;
 }

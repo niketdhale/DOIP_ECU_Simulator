@@ -57,6 +57,14 @@ typedef struct {
     uint32_t connect_timeout_ms;    /**< TCP connect / socket receive timeout in ms */
     uint32_t response_timeout_ms;   /**< Maximum wait for a UDS response in ms */
     uint32_t routing_timeout_ms;    /**< Maximum wait for routing activation response in ms */
+#if DOIP_ENABLE_TLS
+    struct {
+        bool        enable;         /**< Run TLS (1.2+) on the TCP connection; failed handshake -> DOIP_CLIENT_ERR_SOCKET */
+        const char *ca_file;        /**< Trust anchor (PEM) used to verify the server certificate */
+        const char *cert_file;      /**< Optional client certificate (PEM) for mutual TLS */
+        const char *key_file;       /**< Private key for cert_file */
+    } tls;                          /**< Strings must stay valid until DoIP_Client_Connect() returns */
+#endif
 } DoIP_ClientConfig_t;
 
 /* ===== UDP Discovery Result ===== */
@@ -81,7 +89,7 @@ typedef int DoIP_ClientStatus_t;
 #define DOIP_CLIENT_ERR_PARAM      (-1) /**< Invalid parameter (NULL pointer, bad length) */
 #define DOIP_CLIENT_ERR_SOCKET     (-2) /**< Socket creation or bind failed */
 #define DOIP_CLIENT_ERR_TIMEOUT    (-3) /**< Operation timed out */
-#define DOIP_CLIENT_ERR_NACK       (-4) /**< Server sent Generic Header NACK */
+#define DOIP_CLIENT_ERR_NACK       (-4) /**< Server sent a Generic Header NACK or Diagnostic NACK; see DoIP_Client_GetLastNackCode() */
 #define DOIP_CLIENT_ERR_REJECTED   (-5) /**< Routing activation rejected by server */
 #define DOIP_CLIENT_ERR_NOT_READY  (-6) /**< Client not in the required state */
 #define DOIP_CLIENT_ERR_IO         (-7) /**< Unexpected I/O error (read/write) */
@@ -235,6 +243,7 @@ DOIP_API DoIP_ClientStatus_t DoIP_Client_SendDiagnostic(DoIP_Client_t *client,
  * @param[out]    src_addr_out  Optional; receives the ECU logical address from the frame.
  * @retval DOIP_CLIENT_OK           Response received.
  * @retval DOIP_CLIENT_ERR_TIMEOUT  No response within response_timeout_ms.
+ * @retval DOIP_CLIENT_ERR_NACK     Entity rejected the request (e.g. unknown target address).
  * @retval DOIP_CLIENT_ERR_IO       Socket read error or unexpected frame type.
  */
 DOIP_API DoIP_ClientStatus_t DoIP_Client_RecvDiagnostic(DoIP_Client_t *client,
@@ -257,7 +266,10 @@ DOIP_API DoIP_ClientStatus_t DoIP_Client_RecvDiagnostic(DoIP_Client_t *client,
  * @param[in]     resp_buf_size   Size of @p resp_buf in bytes.
  * @param[out]    resp_len_out    Number of UDS response bytes written.
  * @retval DOIP_CLIENT_OK           Transaction completed.
- * @retval DOIP_CLIENT_ERR_TIMEOUT  Response timed out.
+ * @retval DOIP_CLIENT_ERR_NACK     Entity rejected the request (e.g. unknown target address).
+ * @retval DOIP_CLIENT_ERR_TIMEOUT  Response timed out. Also the result for requests that
+ *                                  suppress the positive response (e.g. 3E 80); use
+ *                                  DoIP_Client_SendDiagnostic() alone for those.
  * @retval DOIP_CLIENT_ERR_IO       Socket I/O error.
  * @retval DOIP_CLIENT_ERR_NOT_READY Routing not activated.
  */
@@ -284,6 +296,17 @@ DOIP_API bool DoIP_Client_IsConnected(const DoIP_Client_t *client);
  * @return @c true if routing is active, @c false otherwise.
  */
 DOIP_API bool DoIP_Client_IsRoutingActive(const DoIP_Client_t *client);
+
+/**
+ * @brief Code of the most recent NACK that caused DOIP_CLIENT_ERR_NACK.
+ *
+ * For a Diagnostic NACK (0x8003): 0x02 = invalid source address,
+ * 0x03 = unknown target address. For a Generic Header NACK (0x0000):
+ * 0x00 = incorrect pattern, 0x01 = unknown payload type.
+ * @param[in] client  Client handle.
+ * @return NACK code, or 0xFF if unknown.
+ */
+DOIP_API uint8_t DoIP_Client_GetLastNackCode(const DoIP_Client_t *client);
 
 /** @} */ /* end of doip_client_api group */
 

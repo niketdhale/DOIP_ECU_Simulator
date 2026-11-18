@@ -7,7 +7,27 @@
 *.dylib
 doip_ecu_sim
 doip_client_demo
-doip_discovery_test
+test-frame
+test-uds
+test-isotp
+test-server
+test-alive-bin
+test-sim
+test-multi
+test-multi-tsan
+test-isotp-server
+test-tls
+test-server-ipv6
+fuzz-uds
+fuzz-isotp
+fuzz-tcp
+fuzz-tcp-isotp
+crash-fuzz-*.bin
+tests/certs/
+__pycache__/
+test_lib_server
+test_lib_client
+test_lib_example
 build/
 out/
 
@@ -31,6 +51,7 @@ Desktop.ini
 
 # Core dumps & debugging (Linux crash dump file at repo root, NOT the core/ source dir)
 /core
+!/core/
 *.core
 gdb_history
 
