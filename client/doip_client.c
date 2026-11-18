@@ -18,6 +18,9 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #endif
+#if DOIP_ENABLE_ISO_TP
+#include "transport/doip_isotp.h"
+#endif
 
 /* ===== Internal Client State Machine ===== */
 
@@ -42,6 +45,9 @@ struct DoIP_ClientContext {
 #if DOIP_ENABLE_TLS
     SSL_CTX             *ssl_ctx;
     SSL                 *ssl;           /* non-NULL: all frame I/O goes through TLS */
+#endif
+#if DOIP_ENABLE_ISO_TP
+    doip_isotp_ctx_t     isotp;
 #endif
 };
 
@@ -363,6 +369,9 @@ DoIP_ClientStatus_t DoIP_Client_Disconnect(DoIP_Client_t *client) {
         if (client->ssl) { SSL_shutdown(client->ssl); SSL_free(client->ssl); client->ssl = NULL; }
         if (client->ssl_ctx) { SSL_CTX_free(client->ssl_ctx); client->ssl_ctx = NULL; }
 #endif
+#if DOIP_ENABLE_ISO_TP
+        doip_isotp_reset(&client->isotp);
+#endif
         close(client->tcp_fd);
         client->tcp_fd = -1;
         LOG_INFO(DOIP_LOG_MODULE_CLIENT, "Disconnected from %s:%u",
@@ -449,7 +458,11 @@ static DoIP_ClientStatus_t client_send_diag_msg(DoIP_Client_t *client, uint16_t 
  * On success *data points into client->rx_payload. */
 static DoIP_ClientStatus_t client_next_diag(DoIP_Client_t *client, uint16_t *src,
                                             const uint8_t **data, uint16_t *len) {
+#if DOIP_ENABLE_ISO_TP
+    enum { MAX_SKIP = 1024 };   /* every CF of a long request is ACKed */
+#else
     enum { MAX_SKIP = 64 };
+#endif
     for (int i = 0; i < MAX_SKIP; i++) {
         doip_header_t rx_hdr;
         DoIP_ClientStatus_t rc = client_recv_frame(client, client->config.response_timeout_ms,
@@ -490,6 +503,30 @@ static DoIP_ClientStatus_t client_next_diag(DoIP_Client_t *client, uint16_t *src
     return DOIP_CLIENT_ERR_TIMEOUT;
 }
 
+#if DOIP_ENABLE_ISO_TP
+/* Wait for the server's Flow Control (FS=Wait keeps waiting). */
+static DoIP_ClientStatus_t client_wait_fc(DoIP_Client_t *client, uint8_t *bs, uint8_t *stmin) {
+    for (int waits = 0; waits < 256; waits++) {
+        uint16_t src, len;
+        const uint8_t *d;
+        DoIP_ClientStatus_t rc = client_next_diag(client, &src, &d, &len);
+        if (rc != DOIP_CLIENT_OK) return rc;
+        if (len < 3U || (d[0] & 0xF0U) != ISOTP_PCI_FC) return DOIP_CLIENT_ERR_IO;
+        switch (d[0] & 0x0FU) {
+            case ISOTP_FC_CTS:  *bs = d[1]; *stmin = d[2]; return DOIP_CLIENT_OK;
+            case ISOTP_FC_WAIT: continue;
+            case ISOTP_FC_OVFL: return DOIP_CLIENT_ERR_REJECTED;
+            default:            return DOIP_CLIENT_ERR_IO;
+        }
+    }
+    return DOIP_CLIENT_ERR_TIMEOUT;
+}
+
+static void client_stmin_delay(uint8_t stmin) {
+    if (stmin <= 0x7F)                       usleep((useconds_t)stmin * 1000U);
+    else if (stmin >= 0xF1 && stmin <= 0xF9) usleep((useconds_t)(stmin - 0xF0U) * 100U);
+}
+#endif
 
 DoIP_ClientStatus_t DoIP_Client_SendDiagnostic(DoIP_Client_t *client,
                                                 uint16_t target_ecu_addr,
@@ -498,8 +535,29 @@ DoIP_ClientStatus_t DoIP_Client_SendDiagnostic(DoIP_Client_t *client,
     if (client->state != DOIP_CLI_STATE_ACTIVATED)  return DOIP_CLIENT_ERR_NOT_READY;
     if ((uint32_t)uds_len + 4U > DOIP_MAX_PAYLOAD_SIZE) return DOIP_CLIENT_ERR_PARAM;
 
+#if DOIP_ENABLE_ISO_TP
+    if (uds_len > DOIP_ISOTP_MAX_PDU) return DOIP_CLIENT_ERR_PARAM;
+    enum { MAX_SEGS = 1 + DOIP_ISOTP_MAX_PDU / 7 };
+    uint8_t segs[MAX_SEGS][8];
+    int n = doip_isotp_tx(&client->isotp, uds_data, uds_len, segs, MAX_SEGS);
+    if (n < 1) return DOIP_CLIENT_ERR_PARAM;
+
+    DoIP_ClientStatus_t rc = client_send_diag_msg(client, target_ecu_addr, segs[0], 8);
+    if (rc != DOIP_CLIENT_OK) return rc;
+    for (int i = 1; i < n; ) {
+        uint8_t bs = 0, stmin = 0;
+        rc = client_wait_fc(client, &bs, &stmin);
+        if (rc != DOIP_CLIENT_OK) return rc;
+        for (int blk = 0; i < n && (bs == 0 || blk < bs); i++, blk++) {
+            client_stmin_delay(stmin);
+            rc = client_send_diag_msg(client, target_ecu_addr, segs[i], 8);
+            if (rc != DOIP_CLIENT_OK) return rc;
+        }
+    }
+#else
     DoIP_ClientStatus_t rc = client_send_diag_msg(client, target_ecu_addr, uds_data, uds_len);
     if (rc != DOIP_CLIENT_OK) return rc;
+#endif
 
     LOG_DEBUG(DOIP_LOG_MODULE_CLIENT, "Sent UDS request (target=0x%04X, len=%u)",
               target_ecu_addr, uds_len);
@@ -513,6 +571,32 @@ DoIP_ClientStatus_t DoIP_Client_RecvDiagnostic(DoIP_Client_t *client,
     if (!client || !resp_buf || !resp_len_out) return DOIP_CLIENT_ERR_PARAM;
     if (client->state != DOIP_CLI_STATE_ACTIVATED)  return DOIP_CLIENT_ERR_NOT_READY;
 
+#if DOIP_ENABLE_ISO_TP
+    doip_isotp_reset(&client->isotp);
+    for (;;) {
+        uint16_t src, len;
+        const uint8_t *d;
+        DoIP_ClientStatus_t rc = client_next_diag(client, &src, &d, &len);
+        if (rc != DOIP_CLIENT_OK) return rc;
+        uint8_t fc[8], fc_len = 0;
+        int r = doip_isotp_rx(&client->isotp, d, len, resp_buf, resp_buf_size, fc, &fc_len);
+        if (fc_len > 0) {
+            if (fc[0] == (ISOTP_PCI_FC | ISOTP_FC_CTS)) fc[2] = 0;   /* BS=0, STmin=0 */
+            client_send_diag_msg(client, src, fc, fc_len);
+        }
+        if (r < 0) return DOIP_CLIENT_ERR_IO;
+        if (r == 3 && resp_buf[0] == 0x7F && resp_buf[2] == 0x78) {
+            LOG_DEBUG(DOIP_LOG_MODULE_CLIENT, "Response pending — still waiting");
+            continue;
+        }
+        if (r > 0) {
+            if (src_addr_out) *src_addr_out = src;
+            *resp_len_out = (uint16_t)r;
+            LOG_DEBUG(DOIP_LOG_MODULE_CLIENT, "Received UDS response (len=%d)", r);
+            return DOIP_CLIENT_OK;
+        }
+    }
+#else
     uint16_t src, uds_len;
     const uint8_t *d;
 again:;
@@ -528,6 +612,7 @@ again:;
     *resp_len_out = uds_len;
     LOG_DEBUG(DOIP_LOG_MODULE_CLIENT, "Received UDS response (len=%u)", uds_len);
     return DOIP_CLIENT_OK;
+#endif
 }
 
 DoIP_ClientStatus_t DoIP_Client_Transact(DoIP_Client_t *client,
