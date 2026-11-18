@@ -538,6 +538,12 @@ All compile-time configuration lives in the `config/` headers.
 #define DOIP_ALIVE_CHECK_INTERVAL_MS    5000U   // idle before probe
 #define DOIP_ALIVE_CHECK_TIMEOUT_MS     2000U   // disconnect if no reply
 
+/* ── Protocol toggles (each overridable with -D, e.g. CFLAGS+=-DDOIP_SUPPORT_EID_REQUEST=false) ── */
+#define DOIP_SUPPORT_VIN_REQUEST        true    // answer Vehicle ID requests (PT 0x0001, 0x0003); false = ignored
+#define DOIP_SUPPORT_EID_REQUEST        true    // answer Vehicle ID request with EID (PT 0x0002); false = ignored
+#define DOIP_SUPPORT_ALIVE_CHECK        true    // server probes idle testers; false = no probe/timeout
+                                                // (a tester's own Alive Check request is always answered)
+
 /* ── Optional feature toggles (also settable via Makefile) ─────── */
 /* IPv6 — dual-stack AF_INET6; build with: make DOIP_IPV6=1        */
 #define DOIP_ENABLE_IPV6                false

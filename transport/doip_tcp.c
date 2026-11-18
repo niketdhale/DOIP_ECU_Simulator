@@ -635,6 +635,8 @@ void doip_tcp_tick(DoIP_Handle_t *h, uint32_t now_ms) {
             }
         }
 
+        if (!DOIP_SUPPORT_ALIVE_CHECK) continue;
+
         if (c->alive_check_sent_ms != 0) {
             /* Alive Check already pending — check for timeout */
             if ((int32_t)(now_ms - c->alive_check_sent_ms) > (int32_t)DOIP_ALIVE_CHECK_TIMEOUT_MS) {

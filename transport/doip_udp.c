@@ -204,11 +204,11 @@ int doip_udp_poll(DoIP_Handle_t *h) {
     /* Vehicle ID Request: plain, or filtered by EID / VIN — only answer
      * a filtered request when the filter matches this entity. */
     bool id_req =
-        hdr.payload_type == DOIP_PT_VIN_REQ ||
-        (hdr.payload_type == DOIP_PT_EID_REQ &&
+        (DOIP_SUPPORT_VIN_REQUEST && hdr.payload_type == DOIP_PT_VIN_REQ) ||
+        (DOIP_SUPPORT_EID_REQUEST && hdr.payload_type == DOIP_PT_EID_REQ &&
          hdr.payload_length == DOIP_EID_LENGTH &&
          memcmp(pl, h->identity.eid, DOIP_EID_LENGTH) == 0) ||
-        (hdr.payload_type == DOIP_PT_VIN_REQ_WITH_VIN &&
+        (DOIP_SUPPORT_VIN_REQUEST && hdr.payload_type == DOIP_PT_VIN_REQ_WITH_VIN &&
          hdr.payload_length == DOIP_VIN_LENGTH &&
          memcmp(pl, h->identity.vin, DOIP_VIN_LENGTH) == 0);
 

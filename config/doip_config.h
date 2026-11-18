@@ -95,11 +95,18 @@
 /* Max time a TCP client may stay CONNECTED without completing Routing Activation */
 #define DOIP_INITIAL_INACTIVITY_TIMEOUT_MS 2000U
 
-/* ===== Feature Toggles ===== */
+/* ===== Feature Toggles (override with -D, e.g. -DDOIP_SUPPORT_EID_REQUEST=false) =====
+ * VIN_REQUEST: answer Vehicle ID requests (PT 0x0001, 0x0003); EID_REQUEST: PT 0x0002;
+ * ALIVE_CHECK: server-initiated Alive Check probing (tester-initiated ones are always answered). */
+#ifndef DOIP_SUPPORT_VIN_REQUEST
 #define DOIP_SUPPORT_VIN_REQUEST    true
+#endif
+#ifndef DOIP_SUPPORT_EID_REQUEST
 #define DOIP_SUPPORT_EID_REQUEST    true
-#define DOIP_SUPPORT_ROUTING_ACT    true
+#endif
+#ifndef DOIP_SUPPORT_ALIVE_CHECK
 #define DOIP_SUPPORT_ALIVE_CHECK    true
+#endif
 
 /* ===== IPv6 Support =====
  * Dual-stack sockets (AF_INET6 + IPV6_V6ONLY=0).
