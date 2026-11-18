@@ -90,24 +90,101 @@ static void client_send_diag(DoIP_Handle_t *h, doip_client_t *c, uint16_t tester
 }
 
 /**
- * Send a UDS response (ECU -> tester). With ISO-TP enabled it is segmented
- * into 8-byte N-PDUs (SF, or FF + CFs), one DoIP diagnostic message each.
+ * Send a UDS response (ECU -> tester). With ISO-TP enabled it is framed into
+ * 8-byte N-PDUs, one DoIP diagnostic message each: an SF immediately, or an FF
+ * after which the CFs are paced by the tester's Flow Control (see isotp_tx_fc()
+ * and isotp_tx_tick()).
  */
 static void client_send_uds(DoIP_Handle_t *h, doip_client_t *c, uint16_t tester_addr,
                              const uint8_t *data, uint16_t len)
 {
 #if DOIP_ENABLE_ISO_TP
-    /* ponytail: the Consecutive Frames follow the First Frame immediately; the
-     * tester's Flow Control (block size, STmin) is neither awaited nor honoured.
-     * Add a TX state machine driven from doip_tcp_tick() if a tester needs it. */
-    enum { MAX_SEGS = 1 + DOIP_ISOTP_MAX_PDU / 7 };
-    uint8_t segs[MAX_SEGS][8];
-    int n = doip_isotp_tx(&c->isotp_ctx, data, len, segs, MAX_SEGS);
-    for (int i = 0; i < n; i++) client_send_diag(h, c, tester_addr, segs[i], 8);
+    doip_isotp_ctx_t *x = &c->isotp_ctx;
+    uint8_t seg[1][8];
+    if (len <= DOIP_ISOTP_SF_MAX) {
+        if (doip_isotp_tx(x, data, len, seg, 1) == 1) client_send_diag(h, c, tester_addr, seg[0], 8);
+        return;
+    }
+    if (len > DOIP_ISOTP_MAX_PDU || x->tx_active) {
+        LOG_WARN(DOIP_LOG_MODULE_TCP, "ISO-TP TX: response (%u bytes) dropped", len);
+        return;
+    }
+    memcpy(x->tx_buf, data, len);
+    x->tx_total = len; x->tx_sent = 6U; x->tx_sn = 1U;
+    x->tx_active = 1U; x->tx_wait_fc = 1U;
+    x->tx_deadline_ms = get_time_ms() + DOIP_ISOTP_N_BS_MS;
+    memset(seg[0], 0xCC, 8);
+    seg[0][0] = (uint8_t)(ISOTP_PCI_FF | (len >> 8)); seg[0][1] = (uint8_t)len;
+    memcpy(&seg[0][2], data, 6);
+    client_send_diag(h, c, tester_addr, seg[0], 8);
 #else
     client_send_diag(h, c, tester_addr, data, len);
 #endif
 }
+
+#if DOIP_ENABLE_ISO_TP
+static void isotp_tx_abort(doip_client_t *c, const char *why)
+{
+    LOG_WARN(DOIP_LOG_MODULE_TCP, "ISO-TP TX aborted (fd=%d): %s", c->fd, why);
+    c->isotp_ctx.tx_active = 0;
+}
+
+/** Tester's Flow Control frame for the TX in progress. */
+static void isotp_tx_fc(doip_client_t *c, const uint8_t *fc, uint16_t len)
+{
+    doip_isotp_ctx_t *x = &c->isotp_ctx;
+    if (!x->tx_active || !x->tx_wait_fc || len < 3U) {
+        LOG_WARN(DOIP_LOG_MODULE_TCP, "ISO-TP: unexpected FC ignored (fd=%d)", c->fd);
+        return;
+    }
+    uint32_t now = get_time_ms();
+    switch (fc[0] & 0x0FU) {
+    case ISOTP_FC_CTS:
+        x->tx_bs = fc[1]; x->tx_bs_left = fc[1];
+        /* 0x00-0x7F ms; 0xF1-0xF9 = 100-900 us (rounded down: ticks are 1 ms);
+         * reserved values mean the longest separation, 127 ms */
+        x->tx_stmin_ms = fc[2] <= 0x7FU ? fc[2] : (fc[2] >= 0xF1U && fc[2] <= 0xF9U) ? 0U : 0x7FU;
+        x->tx_next_ms  = now;
+        x->tx_wait_fc  = 0;
+        break;
+    case ISOTP_FC_WAIT:
+        x->tx_deadline_ms = now + DOIP_ISOTP_N_BS_MS;
+        break;
+    default:   /* Overflow or reserved */
+        isotp_tx_abort(c, "tester sent FC overflow");
+    }
+}
+
+/** Send the CFs that are due; called every tick. */
+static void isotp_tx_tick(DoIP_Handle_t *h, doip_client_t *c, uint32_t now_ms)
+{
+    doip_isotp_ctx_t *x = &c->isotp_ctx;
+    if (!x->tx_active) return;
+    if (x->tx_wait_fc) {
+        if ((int32_t)(now_ms - x->tx_deadline_ms) >= 0) isotp_tx_abort(c, "N_Bs timeout waiting for FC");
+        return;
+    }
+    while (x->tx_active && (int32_t)(now_ms - x->tx_next_ms) >= 0) {
+        uint8_t seg[8];
+        uint16_t chunk = (uint16_t)(x->tx_total - x->tx_sent);
+        if (chunk > 7U) chunk = 7U;
+        memset(seg, 0xCC, 8);
+        seg[0] = (uint8_t)(ISOTP_PCI_CF | x->tx_sn);
+        memcpy(&seg[1], x->tx_buf + x->tx_sent, chunk);
+        client_send_diag(h, c, c->tester_logical_addr, seg, 8);
+        x->tx_sent = (uint16_t)(x->tx_sent + chunk);
+        x->tx_sn   = (uint8_t)((x->tx_sn + 1U) & 0x0FU);
+        x->tx_next_ms = now_ms + x->tx_stmin_ms;
+        if (x->tx_sent >= x->tx_total) { x->tx_active = 0; return; }
+        if (x->tx_bs && --x->tx_bs_left == 0) {
+            x->tx_wait_fc = 1U;
+            x->tx_deadline_ms = now_ms + DOIP_ISOTP_N_BS_MS;
+            return;
+        }
+        if (x->tx_stmin_ms) return;
+    }
+}
+#endif
 
 static doip_client_t *find_free_client(DoIP_Handle_t *h) {
     for (int i = 0; i < DOIP_MAX_TCP_CLIENTS; i++) {
@@ -309,6 +386,16 @@ next_frame:
                       functional ? " (functional)" : "", uds_req_len);
 
 #if DOIP_ENABLE_ISO_TP
+            if (uds_req_len > 0 && (uds_req[0] & 0xF0U) == ISOTP_PCI_FC) {
+                isotp_tx_fc(client, uds_req, uds_req_len);   /* drives our segmented TX */
+                break;
+            }
+            if (client->isotp_ctx.tx_active) {               /* still sending the last response */
+                const uint8_t nrc[3] = { 0x7F, (uds_req_len > 1 && !(uds_req[0] & 0xF0U)) ? uds_req[1] : 0,
+                                         UDS_NRC_BUSY_REPEAT_REQUEST };
+                client_send_uds(h, client, tester_addr, nrc, sizeof(nrc));
+                break;
+            }
             /* ISO-TP reassembly: feed the DoIP payload, get UDS bytes out */
             uint8_t isotp_buf[4095];
             uint8_t fc_buf[8];
@@ -629,6 +716,9 @@ void doip_tcp_tick(DoIP_Handle_t *h, uint32_t now_ms) {
         }
         if (c->state != DOIP_TCP_STATE_ACTIVATED) continue;
 
+#if DOIP_ENABLE_ISO_TP
+        isotp_tx_tick(h, c, now_ms);
+#endif
         if (c->pending_len > 0) {
             if ((int32_t)(now_ms - c->pending_due_ms) >= 0) {
                 client_send_uds(h, c, c->tester_logical_addr, c->pending_res, c->pending_len);

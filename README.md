@@ -679,9 +679,9 @@ make DOIP_ISOTP=1 test-isotp   # run 14 unit tests, no sockets
 | Type | PCI nibble | Direction | Description |
 |------|-----------|-----------|-------------|
 | SF (Single Frame) | `0x0` | RX + TX | Payload ≤ 7 bytes, no handshake |
-| FF (First Frame) | `0x1` | RX | Start of multi-frame; triggers FC CTS |
-| CF (Consecutive Frame) | `0x2` | RX | Continuation; sequence number validated |
-| FC (Flow Control) | `0x3` | TX | Emitted by receiver after FF (CTS / overflow) |
+| FF (First Frame) | `0x1` | RX + TX | Start of multi-frame; received FF triggers FC CTS |
+| CF (Consecutive Frame) | `0x2` | RX + TX | Continuation; sequence number validated |
+| FC (Flow Control) | `0x3` | RX + TX | Sent after a received FF (CTS / overflow); received FC paces our own response |
 
 **RX reassembly API:**
 
@@ -705,6 +705,15 @@ int doip_isotp_tx(doip_isotp_ctx_t *ctx,
 ```
 
 Each segment is exactly 8 bytes, padded with `0xCC` per ISO 15765-2.
+
+**Flow control on responses.** A UDS response longer than 7 bytes is copied into the client's ISO-TP context and sent as a First Frame; the server then waits for the tester's Flow Control (sent as a DoIP diagnostic message whose first byte is `0x3X`). The Consecutive Frames are sent from `doip_tcp_tick()` (about every 1 ms, no sleeping):
+
+- `FS=0` (CTS): honours the block size (`BS=0` means no limit; another FC is awaited after each block) and STmin (`0x00`-`0x7F` ms; `0xF1`-`0xF9` = 100-900 us, treated as 0 because ticks are 1 ms; reserved values = 127 ms).
+- `FS=1` (Wait): keeps waiting, restarting the `DOIP_ISOTP_N_BS_MS` timer.
+- `FS=2` (Overflow), or no FC within `DOIP_ISOTP_N_BS_MS`: the response is abandoned with a warning; the connection stays open.
+- While a segmented response is in progress, a new request from that tester is answered with NRC `0x21` (busy, repeat request).
+
+Limits: one segmented response per client at a time; the receive side always answers a FF with `CTS, BS=0, STmin=DOIP_ISOTP_STMIN_MS`.
 
 ---
 
