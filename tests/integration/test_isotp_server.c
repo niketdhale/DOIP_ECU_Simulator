@@ -15,6 +15,7 @@
 #include "fixture.h"
 #include "transport/doip_isotp.h"
 #include "config/doip_uds_config.h"
+#include "client/doip_client.h"
 
 #if !DOIP_ENABLE_ISO_TP
 #error "build with -DDOIP_ENABLE_ISO_TP=true"
@@ -288,6 +289,49 @@ void test_unexpected_consecutive_frame_closes_connection(void)
     TEST_ASSERT_EQUAL_INT(0, (int)recv(s_fd, npdu, sizeof(npdu), 0));
 }
 
+/* ── Client library: ISO-TP in both directions ─────────────────────── */
+
+static uint16_t lib_transact(const uint8_t *req, uint16_t rlen, uint8_t *resp, uint16_t size)
+{
+    DoIP_Client_t *c = DoIP_Client_Create();
+    TEST_ASSERT_EQUAL_INT(DOIP_CLIENT_OK, DoIP_Client_Init(c, NULL));
+    TEST_ASSERT_EQUAL_INT(DOIP_CLIENT_OK, DoIP_Client_Connect(c, "127.0.0.1", DOIP_TCP_PORT));
+    TEST_ASSERT_EQUAL_INT(DOIP_CLIENT_OK, DoIP_Client_ActivateRouting(c, 0x00, NULL));
+    uint16_t n = 0;
+    TEST_ASSERT_EQUAL_INT(DOIP_CLIENT_OK,
+        DoIP_Client_Transact(c, DOIP_ECU_LOGICAL_ADDRESS, req, rlen, resp, size, &n));
+    DoIP_Client_Destroy(c);
+    return n;
+}
+
+void test_client_library_short_request_and_response(void)
+{
+    const uint8_t req[] = { UDS_SID_TESTER_PRESENT, 0x00 }, exp[] = { 0x7E, 0x00 };
+    uint8_t resp[16];
+    TEST_ASSERT_EQUAL_UINT16(2, lib_transact(req, sizeof(req), resp, sizeof(resp)));
+    TEST_ASSERT_EQUAL_HEX8_ARRAY(exp, resp, 2);
+}
+
+void test_client_library_long_response(void)
+{
+    const uint8_t req[] = { UDS_SID_READ_DATA_BY_ID, 0xF1, 0x90 };
+    uint8_t resp[64];
+    TEST_ASSERT_EQUAL_UINT16(3 + DOIP_VIN_LENGTH, lib_transact(req, sizeof(req), resp, sizeof(resp)));
+    TEST_ASSERT_EQUAL_HEX8(UDS_SID_READ_DATA_BY_ID_RES, resp[0]);
+    TEST_ASSERT_EQUAL_MEMORY(TEST_VIN, resp + 3, DOIP_VIN_LENGTH);
+}
+
+void test_client_library_long_request(void)
+{
+    const uint8_t req[] = { UDS_SID_READ_DATA_BY_ID, 0xF1, 0x90, 0xF1, 0x8C, 0xF1, 0x86, 0xF1, 0x82 };
+    uint8_t resp[256];
+    char expected[256];
+    int elen = snprintf(expected, sizeof(expected), "\x62\xF1\x90%s\xF1\x8C%s\xF1\x86%s\xF1\x82%s",
+                        TEST_VIN, TEST_SERIAL, TEST_NAME, TEST_SW);
+    TEST_ASSERT_EQUAL_UINT16((uint16_t)elen, lib_transact(req, sizeof(req), resp, sizeof(resp)));
+    TEST_ASSERT_EQUAL_MEMORY(expected, resp, (size_t)elen);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -302,5 +346,8 @@ int main(void)
     RUN_TEST(test_segmented_request_gets_flow_control_and_answer);
     RUN_TEST(test_response_pending_is_framed);
     RUN_TEST(test_unexpected_consecutive_frame_closes_connection);
+    RUN_TEST(test_client_library_short_request_and_response);
+    RUN_TEST(test_client_library_long_response);
+    RUN_TEST(test_client_library_long_request);
     return UNITY_END();
 }

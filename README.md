@@ -294,8 +294,8 @@ make test-install
 | Two instances in one process (ports 23410 / 23411); also `make test-tsan` | `make test` | 6 |
 | End-to-end tests of the binary (port 24400) | `make test` | 12 |
 | Alive-check timing tests | `make test-alive` | 3 |
-| ISO-TP server integration tests | `make test-features` | 5 |
-| TLS server integration tests | `make test-features` | 6 |
+| ISO-TP server integration tests | `make test-features` | 8 |
+| TLS server integration tests | `make test-features` | 9 |
 | Integration suite against the IPv6 dual-stack server | `make test-features` | 27 |
 
 `make test` always tests the default configuration (plus `DOIP_2019=1` if given); the `DOIP_TLS` / `DOIP_IPV6` / `DOIP_ISOTP` flags only affect the simulator and library build. The feature code paths are covered by `make test-features`, where each test binary is built with its own define.
@@ -470,6 +470,22 @@ typedef struct {
 ### Client API (`client/doip_client.h`)
 
 ```c
+// Configuration (zero fields get defaults)
+typedef struct {
+    uint16_t tester_logical_addr;   // default DOIP_TESTER_LOGICAL_ADDRESS
+    uint32_t connect_timeout_ms;
+    uint32_t response_timeout_ms;
+    uint32_t routing_timeout_ms;
+#if DOIP_ENABLE_TLS                 // make DOIP_TLS=1
+    struct {
+        bool        enable;         // TLS 1.2+ on the TCP connection
+        const char *ca_file;        // trust anchor for the server certificate
+        const char *cert_file;      // optional client certificate (mutual TLS)
+        const char *key_file;
+    } tls;                          // failed handshake -> DOIP_CLIENT_ERR_SOCKET
+#endif
+} DoIP_ClientConfig_t;
+
 // Lifecycle
 DoIP_Client_t*      DoIP_Client_Create(void);
 DoIP_ClientStatus_t DoIP_Client_Init(DoIP_Client_t *c, const DoIP_ClientConfig_t *cfg);
@@ -495,6 +511,11 @@ DoIP_ClientStatus_t DoIP_Client_Transact(DoIP_Client_t *c, uint16_t target_addr,
                                           const uint8_t *req, uint16_t req_len,
                                           uint8_t *resp, uint16_t resp_size,
                                           uint16_t *resp_len_out);
+
+// With DOIP_ISOTP=1 the client segments requests into ISO-TP N-PDUs (SF, or FF +
+// CFs after the server's Flow Control, honouring BS/STmin; FS=Overflow ->
+// ERR_REJECTED) and reassembles responses (answering an FF with FC CTS).
+// Callers still pass and receive plain UDS bytes (up to 4095).
 
 // State queries
 bool DoIP_Client_IsConnected(const DoIP_Client_t *c);
@@ -642,7 +663,7 @@ Limits to know about:
 - In a TLS build every TCP client must use TLS on the same port; cleartext clients are dropped.
 - UDP (vehicle announcement / identification) is not encrypted. `doip_dtls_wrap()` exists in `doip_tls.c` but is not wired into the UDP path.
 - The handshake is done synchronously at accept time (bounded by `DOIP_TLS_HANDSHAKE_TIMEOUT_S`, 2 s), so a client that connects and stays silent pauses the server for that long.
-- The bundled client library and `doip_client_demo` do not speak TLS.
+- The client library speaks TLS when built with `DOIP_TLS=1` (see the client API below); `doip_client_demo` has no TLS options and always connects in cleartext.
 - `doip_tls_init()` sets `SIGPIPE` to ignored for the process, because OpenSSL writes with plain `write()`.
 
 ---

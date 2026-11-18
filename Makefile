@@ -59,6 +59,7 @@ TARGET = doip_ecu_sim
 
 # ===== Client (DoIP Tester) =====
 CLIENT_OBJS   = core/doip_frame.o core/doip_log.o \
+                $(FEAT_ISOTP_SRCS:.c=.o) \
                 client/doip_client.o client/main_client.o
 CLIENT_TARGET = doip_client_demo
 

@@ -57,6 +57,14 @@ typedef struct {
     uint32_t connect_timeout_ms;    /**< TCP connect / socket receive timeout in ms */
     uint32_t response_timeout_ms;   /**< Maximum wait for a UDS response in ms */
     uint32_t routing_timeout_ms;    /**< Maximum wait for routing activation response in ms */
+#if DOIP_ENABLE_TLS
+    struct {
+        bool        enable;         /**< Run TLS (1.2+) on the TCP connection; failed handshake -> DOIP_CLIENT_ERR_SOCKET */
+        const char *ca_file;        /**< Trust anchor (PEM) used to verify the server certificate */
+        const char *cert_file;      /**< Optional client certificate (PEM) for mutual TLS */
+        const char *key_file;       /**< Private key for cert_file */
+    } tls;                          /**< Strings must stay valid until DoIP_Client_Connect() returns */
+#endif
 } DoIP_ClientConfig_t;
 
 /* ===== UDP Discovery Result ===== */

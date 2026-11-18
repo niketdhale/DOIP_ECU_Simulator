@@ -4,14 +4,15 @@
  *
  * Built with -DDOIP_ENABLE_TLS=true and linked against OpenSSL
  * (make test-tls). The Makefile generates throwaway self-signed
- * certificates into tests/certs/. The tester side is a plain OpenSSL
- * client, because the bundled client library does not speak TLS.
+ * certificates into tests/certs/. The tester side is mostly a plain OpenSSL
+ * client; a few tests drive the bundled client library over TLS.
  *
  * Run: ./test-tls   (from the repository root)
  */
 #include "unity.h"
 #include "fixture.h"
 #include "config/doip_uds_config.h"
+#include "client/doip_client.h"
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <stdbool.h>
@@ -242,6 +243,68 @@ void test_mutual_tls_requires_client_certificate(void)
     tls_close(&t, true);
 }
 
+/* ── Client library over TLS ───────────────────────────────────────── */
+
+static DoIP_Client_t *lib_client(const char *ca, const char *cert, const char *key)
+{
+    DoIP_ClientConfig_t cc;
+    memset(&cc, 0, sizeof(cc));
+    cc.tls.enable = true;
+    cc.tls.ca_file = ca;
+    cc.tls.cert_file = cert;
+    cc.tls.key_file = key;
+    DoIP_Client_t *c = DoIP_Client_Create();
+    TEST_ASSERT_EQUAL_INT(DOIP_CLIENT_OK, DoIP_Client_Init(c, &cc));
+    return c;
+}
+
+static void lib_read_vin(DoIP_Client_t *c)
+{
+    TEST_ASSERT_EQUAL_INT(DOIP_CLIENT_OK, DoIP_Client_ActivateRouting(c, 0x00, NULL));
+    const uint8_t req[] = { UDS_SID_READ_DATA_BY_ID, 0xF1, 0x90 };
+    uint8_t resp[64];
+    uint16_t n = 0;
+    TEST_ASSERT_EQUAL_INT(DOIP_CLIENT_OK,
+        DoIP_Client_Transact(c, DOIP_ECU_LOGICAL_ADDRESS, req, sizeof(req), resp, sizeof(resp), &n));
+    TEST_ASSERT_EQUAL_INT(3 + DOIP_VIN_LENGTH, n);
+    TEST_ASSERT_EQUAL_HEX8(UDS_SID_READ_DATA_BY_ID_RES, resp[0]);
+    TEST_ASSERT_EQUAL_MEMORY("WBAXXXXXXXXXXXXXX", resp + 3, DOIP_VIN_LENGTH);
+}
+
+void test_client_library_over_tls(void)
+{
+    DoIP_Client_t *c = lib_client(SERVER_CERT, NULL, NULL);
+    TEST_ASSERT_EQUAL_INT(DOIP_CLIENT_OK, DoIP_Client_Connect(c, "127.0.0.1", DOIP_TCP_PORT));
+    lib_read_vin(c);
+    DoIP_Client_Destroy(c);
+}
+
+void test_client_library_rejects_untrusted_server(void)
+{
+    DoIP_Client_t *c = lib_client(CLIENT_CERT, NULL, NULL);   /* wrong trust anchor */
+    TEST_ASSERT_EQUAL_INT(DOIP_CLIENT_ERR_SOCKET, DoIP_Client_Connect(c, "127.0.0.1", DOIP_TCP_PORT));
+    TEST_ASSERT_FALSE(DoIP_Client_IsConnected(c));
+    DoIP_Client_Destroy(c);
+}
+
+void test_client_library_mutual_tls(void)
+{
+    fx_stop();
+    start_server(true);
+
+    DoIP_Client_t *c = lib_client(SERVER_CERT, NULL, NULL);
+    DoIP_ClientStatus_t rc = DoIP_Client_Connect(c, "127.0.0.1", DOIP_TCP_PORT);
+    if (rc == DOIP_CLIENT_OK)   /* TLS 1.3: the rejection only shows on first use */
+        rc = DoIP_Client_ActivateRouting(c, 0x00, NULL);
+    TEST_ASSERT_NOT_EQUAL_INT(DOIP_CLIENT_OK, rc);
+    DoIP_Client_Destroy(c);
+
+    c = lib_client(SERVER_CERT, CLIENT_CERT, CLIENT_KEY);
+    TEST_ASSERT_EQUAL_INT(DOIP_CLIENT_OK, DoIP_Client_Connect(c, "127.0.0.1", DOIP_TCP_PORT));
+    lib_read_vin(c);
+    DoIP_Client_Destroy(c);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -251,5 +314,8 @@ int main(void)
     RUN_TEST(test_pipelined_frames_in_one_tls_record);
     RUN_TEST(test_server_survives_disconnect_during_responses);
     RUN_TEST(test_mutual_tls_requires_client_certificate);
+    RUN_TEST(test_client_library_over_tls);
+    RUN_TEST(test_client_library_rejects_untrusted_server);
+    RUN_TEST(test_client_library_mutual_tls);
     return UNITY_END();
 }
