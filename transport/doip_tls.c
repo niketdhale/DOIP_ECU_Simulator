@@ -153,44 +153,58 @@ void doip_tls_deinit(doip_tls_server_t *s)
     }
 }
 
-doip_io_t doip_tls_accept(doip_tls_server_t *s, int client_fd)
+SSL *doip_tls_start(doip_tls_server_t *s, int client_fd)
 {
-    doip_io_t io;
-    memset(&io, 0, sizeof(io));
-
-    if (!s || !s->ctx || client_fd < 0) return io;
+    if (!s || !s->ctx || client_fd < 0) return NULL;
 
     SSL *ssl = SSL_new(s->ctx);
     if (!ssl) {
         ERR_print_errors_fp(stderr);
-        return io;
+        return NULL;
     }
-
     if (SSL_set_fd(ssl, client_fd) != 1) {
         SSL_free(ssl);
-        return io;
+        return NULL;
     }
+    SSL_set_accept_state(ssl);
+    return ssl;
+}
 
+int doip_tls_continue(SSL *ssl)
+{
+    ERR_clear_error();
     int rc = SSL_accept(ssl);
-    if (rc != 1) {
-        int err = SSL_get_error(ssl, rc);
-        LOG_ERROR(DOIP_LOG_MODULE_TCP,
-                  "TLS handshake failed (fd=%d, err=%d)", client_fd, err);
-        ERR_print_errors_fp(stderr);
-        SSL_free(ssl);
-        return io;
+    if (rc == 1) {
+        LOG_INFO(DOIP_LOG_MODULE_TCP, "TLS handshake OK (fd=%d, cipher=%s)",
+                 SSL_get_fd(ssl), SSL_get_cipher(ssl));
+        return 1;
     }
+    int err = SSL_get_error(ssl, rc);
+    if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) return 0;
+    LOG_ERROR(DOIP_LOG_MODULE_TCP, "TLS handshake failed (fd=%d, err=%d)",
+              SSL_get_fd(ssl), err);
+    ERR_print_errors_fp(stderr);
+    return -1;
+}
 
-    LOG_INFO(DOIP_LOG_MODULE_TCP,
-             "TLS handshake OK (fd=%d, cipher=%s)",
-             client_fd, SSL_get_cipher(ssl));
-
+doip_io_t doip_tls_io(SSL *ssl)
+{
+    doip_io_t io;
+    memset(&io, 0, sizeof(io));
     io.ctx   = (void *)ssl;
     io.read  = tls_read;
     io.write = tls_write;
     io.getfd = tls_getfd;
     io.close = tls_close;
     return io;
+}
+
+void doip_tls_abort(SSL *ssl)
+{
+    if (!ssl) return;
+    int fd = SSL_get_fd(ssl);
+    SSL_free(ssl);
+    if (fd >= 0) close(fd);
 }
 
 doip_io_t doip_dtls_wrap(doip_tls_server_t *s, int udp_fd,

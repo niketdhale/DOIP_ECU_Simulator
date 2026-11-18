@@ -15,7 +15,7 @@
  *
  * Usage — TLS (requires DOIP_ENABLE_TLS):
  * @code
- *   client->io = doip_tls_accept(&g_tls_server, accepted_fd);
+ *   client->io = doip_tls_io(ssl); (after doip_tls_continue() == 1);
  * @endcode
  */
 #ifndef DOIP_IO_H

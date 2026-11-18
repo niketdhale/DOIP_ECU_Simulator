@@ -13,8 +13,9 @@
  *   doip_tls_server_t srv;
  *   doip_tls_init(&srv, "server.crt", "server.key", NULL, false);
  *   ...
- *   doip_io_t io = doip_tls_accept(&srv, accepted_fd);
- *   client->io = io;
+ *   SSL *ssl = doip_tls_start(&srv, accepted_fd);
+ *   while (doip_tls_continue(ssl) == 0) { ...wait readable... }
+ *   client->io = doip_tls_io(ssl);
  * @endcode
  */
 #ifndef DOIP_TLS_H
@@ -29,6 +30,11 @@
 #include <openssl/err.h>
 #include <stdbool.h>
 #include <sys/socket.h>   /* struct sockaddr / socklen_t for DTLS */
+
+/** A TLS handshake not complete this many seconds after accept is dropped. */
+#ifndef DOIP_TLS_HANDSHAKE_TIMEOUT_S
+#define DOIP_TLS_HANDSHAKE_TIMEOUT_S 2
+#endif
 
 /**
  * @brief Server-side TLS context.
@@ -65,18 +71,23 @@ int doip_tls_init(doip_tls_server_t *s,
 void doip_tls_deinit(doip_tls_server_t *s);
 
 /**
- * @brief Wrap an accepted TCP socket in a TLS session.
- *
- * Performs the TLS handshake synchronously.  Returns a doip_io_t whose
- * read/write/close vtable functions call SSL_read / SSL_write / SSL_free.
- * On handshake failure the returned ctx will be NULL — callers must check
- * @c io.ctx != NULL before using the result.
- *
- * @param s         Server context from doip_tls_init().
- * @param client_fd Accepted, connected TCP socket file descriptor.
- * @return Fully populated doip_io_t, or a zeroed struct on failure.
+ * @brief Begin a server-side TLS session on an accepted, non-blocking socket.
+ * @return SSL object (no handshake bytes exchanged yet), or NULL on failure.
  */
-doip_io_t doip_tls_accept(doip_tls_server_t *s, int client_fd);
+SSL *doip_tls_start(doip_tls_server_t *s, int client_fd);
+
+/**
+ * @brief Advance the handshake; call again whenever the socket is readable.
+ * @return 1 = complete, 0 = pending (WANT_READ/WANT_WRITE), -1 = failed.
+ *         The caller owns the SSL and must doip_tls_abort() it on failure.
+ */
+int doip_tls_continue(SSL *ssl);
+
+/** @brief Build the doip_io_t (SSL_read/SSL_write/SSL_free+close) for a finished handshake. */
+doip_io_t doip_tls_io(SSL *ssl);
+
+/** @brief Free an SSL whose handshake did not finish, and close its socket. */
+void doip_tls_abort(SSL *ssl);
 
 /**
  * @brief Wrap a UDP socket in a DTLS session (one SSL per peer).

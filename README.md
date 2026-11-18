@@ -656,13 +656,13 @@ config.tls.verify_peer = false;
 DoIP_Init(handle, &config);
 ```
 
-Internals: the TCP server reads the certificate paths from the instance's configuration when `DoIP_Init()` opens its sockets. At accept time, `doip_tls_accept()` performs the TLS handshake and returns a `doip_io_t` whose vtable calls `SSL_read`/`SSL_write` — the rest of the stack sees no difference.
+Internals: the TCP server reads the certificate paths from the instance's configuration when `DoIP_Init()` opens its sockets. At accept time `doip_tls_start()` creates the SSL object and the handshake is then driven non-blockingly from the `select()` loop (`doip_tls_continue()`); once it completes, `doip_tls_io()` yields a `doip_io_t` whose vtable calls `SSL_read`/`SSL_write` — the rest of the stack sees no difference.
 
 Limits to know about:
 
 - In a TLS build every TCP client must use TLS on the same port; cleartext clients are dropped.
 - UDP (vehicle announcement / identification) is not encrypted. `doip_dtls_wrap()` exists in `doip_tls.c` but is not wired into the UDP path.
-- The handshake is done synchronously at accept time (bounded by `DOIP_TLS_HANDSHAKE_TIMEOUT_S`, 2 s), so a client that connects and stays silent pauses the server for that long.
+- The handshake is non-blocking: a client that connects and stays silent does not delay other clients, but is dropped after `DOIP_TLS_HANDSHAKE_TIMEOUT_S` (2 s). `on_client_connect` fires when the handshake completes.
 - The client library speaks TLS when built with `DOIP_TLS=1` (see the client API below); `doip_client_demo` has no TLS options and always connects in cleartext.
 - `doip_tls_init()` sets `SIGPIPE` to ignored for the process, because OpenSSL writes with plain `write()`.
 

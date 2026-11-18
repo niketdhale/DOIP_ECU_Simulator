@@ -29,7 +29,7 @@ typedef struct __attribute__((packed)) {
     uint32_t            reserved;
 } doip_routing_act_res_t;
 
-typedef enum { DOIP_TCP_STATE_IDLE, DOIP_TCP_STATE_CONNECTED, DOIP_TCP_STATE_ACTIVATED, DOIP_TCP_STATE_CLOSING } doip_tcp_state_t;
+typedef enum { DOIP_TCP_STATE_IDLE, DOIP_TCP_STATE_CONNECTED, DOIP_TCP_STATE_ACTIVATED, DOIP_TCP_STATE_CLOSING, DOIP_TCP_STATE_HANDSHAKE } doip_tcp_state_t;
 
 typedef struct {
     int                 fd;
@@ -41,6 +41,7 @@ typedef struct {
     uint32_t            alive_check_sent_ms;  /* Non-zero while an Alive Check Req is pending */
     UdsClientContext_t  uds_ctx;              /* Per-client UDS state                      */
     bool                in_use;
+    void               *hs_ssl;               /* SSL* while state == HANDSHAKE (TLS builds) */
 
     /* Partial-frame reassembly buffer — removes need for SO_RCVTIMEO */
     uint8_t             rx_buf[DOIP_HEADER_SIZE + DOIP_MAX_PAYLOAD_SIZE];

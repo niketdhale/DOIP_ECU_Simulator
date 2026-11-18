@@ -31,10 +31,6 @@
 #include <stdlib.h>
 #include <fcntl.h>
 
-#ifndef DOIP_TLS_HANDSHAKE_TIMEOUT_S
-#define DOIP_TLS_HANDSHAKE_TIMEOUT_S 2
-#endif
-
 /* ---------------------------------------------------------------------------
  * Helpers
  * -------------------------------------------------------------------------*/
@@ -198,27 +194,19 @@ static doip_client_t *find_free_client(DoIP_Handle_t *h) {
 }
 
 /**
- * @brief Create the client's I/O vtable.  For TLS the handshake runs with the
- * socket temporarily in blocking mode (bounded by SO_RCVTIMEO/SO_SNDTIMEO),
- * then non-blocking is restored.  Returns false if the client must be dropped.
+ * @brief Create the client's I/O vtable.  For TLS only the SSL object is
+ * created here; the handshake is driven by doip_tcp_poll() (HANDSHAKE state).
+ * Returns false if the client must be dropped.
  */
 static bool client_setup_io(DoIP_Handle_t *h, doip_client_t *client, int fd)
 {
 #if DOIP_ENABLE_TLS
-    int fl = fcntl(fd, F_GETFL, 0);
-    struct timeval tmo = { .tv_sec = DOIP_TLS_HANDSHAKE_TIMEOUT_S, .tv_usec = 0 };
-    fcntl(fd, F_SETFL, fl & ~O_NONBLOCK);
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tmo, sizeof(tmo));
-    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tmo, sizeof(tmo));
-    client->io = doip_tls_accept(&h->tls, fd);
-    tmo.tv_sec = 0;
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tmo, sizeof(tmo));
-    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tmo, sizeof(tmo));
-    fcntl(fd, F_SETFL, fl | O_NONBLOCK);
-    if (!client->io.read || !client->io.getfd) {
-        LOG_WARN(DOIP_LOG_MODULE_TCP, "TLS accept failed (fd=%d) — dropping", fd);
+    client->hs_ssl = doip_tls_start(&h->tls, fd);
+    if (!client->hs_ssl) {
+        LOG_WARN(DOIP_LOG_MODULE_TCP, "TLS start failed (fd=%d) — dropping", fd);
         return false;
     }
+    client->state = DOIP_TCP_STATE_HANDSHAKE;
 #else
     (void)h;
     client->io = doip_io_plain(fd);
@@ -232,6 +220,14 @@ static void close_client(DoIP_Handle_t *h, doip_client_t *client) {
     LOG_INFO(DOIP_LOG_MODULE_TCP, "Client disconnected (fd=%d, ip=%s)",
              fd, client->peer_ip[0] ? client->peer_ip : "?");
 
+#if DOIP_ENABLE_TLS
+    if (client->state == DOIP_TCP_STATE_HANDSHAKE) {
+        /* Never announced as connected, so no disconnect callback either */
+        doip_tls_abort((SSL *)client->hs_ssl);
+        memset(client, 0, sizeof(doip_client_t));
+        return;
+    }
+#endif
     /* Notify application before releasing the fd */
     if (h->config.on_client_disconnect)
         h->config.on_client_disconnect(fd, h->config.user_context);
@@ -610,7 +606,7 @@ int doip_tcp_poll(DoIP_Handle_t *h) {
 
     for (int i = 0; i < DOIP_MAX_TCP_CLIENTS; i++) {
         if (h->clients[i].in_use) {
-            int fd = h->clients[i].io.getfd(h->clients[i].io.ctx);
+            int fd = h->clients[i].fd;
             FD_SET(fd, &readfds);
             if (fd > max_fd) max_fd = fd;
         }
@@ -644,7 +640,7 @@ int doip_tcp_poll(DoIP_Handle_t *h) {
                               client->peer_ip, sizeof(client->peer_ip));
                     LOG_INFO(DOIP_LOG_MODULE_TCP, "Client connected: [%s]:%d (fd=%d)",
                              client->peer_ip, ntohs(ca.sin6_port), new_fd);
-                    if (h->config.on_client_connect)
+                    if (client->state != DOIP_TCP_STATE_HANDSHAKE && h->config.on_client_connect)
                         h->config.on_client_connect(new_fd, h->config.user_context);
                 }
             } else {
@@ -675,7 +671,7 @@ int doip_tcp_poll(DoIP_Handle_t *h) {
                               client->peer_ip, sizeof(client->peer_ip));
                     LOG_INFO(DOIP_LOG_MODULE_TCP, "Client connected: %s:%d (fd=%d)",
                              client->peer_ip, ntohs(ca.sin_port), new_fd);
-                    if (h->config.on_client_connect)
+                    if (client->state != DOIP_TCP_STATE_HANDSHAKE && h->config.on_client_connect)
                         h->config.on_client_connect(new_fd, h->config.user_context);
                 }
             } else {
@@ -689,8 +685,23 @@ int doip_tcp_poll(DoIP_Handle_t *h) {
     /* --- Service readable clients --- */
     for (int i = 0; i < DOIP_MAX_TCP_CLIENTS; i++) {
         if (!h->clients[i].in_use) continue;
-        int fd = h->clients[i].io.getfd(h->clients[i].io.ctx);
-        if (FD_ISSET(fd, &readfds)) {
+        int fd = h->clients[i].fd;
+        if (!FD_ISSET(fd, &readfds)) continue;
+#if DOIP_ENABLE_TLS
+        if (h->clients[i].state == DOIP_TCP_STATE_HANDSHAKE) {
+            int rc = doip_tls_continue((SSL *)h->clients[i].hs_ssl);
+            if (rc < 0) { close_client(h, &h->clients[i]); continue; }
+            if (rc == 0) continue;
+            h->clients[i].io = doip_tls_io((SSL *)h->clients[i].hs_ssl);
+            h->clients[i].hs_ssl = NULL;
+            h->clients[i].state = DOIP_TCP_STATE_CONNECTED;
+            h->clients[i].connect_ms = get_time_ms();   /* initial-inactivity window starts after the handshake */
+            if (h->config.on_client_connect)
+                h->config.on_client_connect(fd, h->config.user_context);
+            /* fall through: the handshake may have left application data buffered */
+        }
+#endif
+        {
             if (process_client_frame(h, &h->clients[i]) < 0)
                 close_client(h, &h->clients[i]);
         }
@@ -706,6 +717,16 @@ void doip_tcp_tick(DoIP_Handle_t *h, uint32_t now_ms) {
     for (int i = 0; i < DOIP_MAX_TCP_CLIENTS; i++) {
         doip_client_t *c = &h->clients[i];
         if (!c->in_use) continue;
+#if DOIP_ENABLE_TLS
+        if (c->state == DOIP_TCP_STATE_HANDSHAKE) {
+            if ((int32_t)(now_ms - c->connect_ms) > (int32_t)(DOIP_TLS_HANDSHAKE_TIMEOUT_S * 1000)) {
+                LOG_WARN(DOIP_LOG_MODULE_TCP,
+                         "TLS handshake timeout for fd=%d — disconnecting", c->fd);
+                close_client(h, c);
+            }
+            continue;
+        }
+#endif
         if (c->state == DOIP_TCP_STATE_CONNECTED) {
             if ((int32_t)(now_ms - c->connect_ms) > (int32_t)DOIP_INITIAL_INACTIVITY_TIMEOUT_MS) {
                 LOG_WARN(DOIP_LOG_MODULE_TCP,

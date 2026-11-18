@@ -13,9 +13,12 @@
 #include "fixture.h"
 #include "config/doip_uds_config.h"
 #include "client/doip_client.h"
+#include "transport/doip_tls.h"
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <stdbool.h>
+#include <time.h>
+#include <errno.h>
 
 #if !DOIP_ENABLE_TLS
 #error "build with -DDOIP_ENABLE_TLS=true"
@@ -305,11 +308,55 @@ void test_client_library_mutual_tls(void)
     DoIP_Client_Destroy(c);
 }
 
+static long now_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1000L + ts.tv_nsec / 1000000L;
+}
+
+void test_silent_client_does_not_stall_server(void)
+{
+    int silent = fx_connect();                 /* connects, never starts a handshake */
+    TEST_ASSERT_GREATER_THAN_INT(-1, silent);
+
+    long t0 = now_ms();
+    tls_tester_t t;
+    TEST_ASSERT_TRUE(tls_open(&t, false));
+    TEST_ASSERT_EQUAL_INT(0x10, tls_activate(&t));
+    const uint8_t req[] = { UDS_SID_READ_DATA_BY_ID, 0xF1, 0x90 };
+    uint8_t frame[64], pl[64];
+    uint16_t pt = 0;
+    TEST_ASSERT_TRUE(tls_send(&t, frame, fx_build_diag(frame, DOIP_ECU_LOGICAL_ADDRESS, req, sizeof(req))));
+    TEST_ASSERT_EQUAL_INT(5, tls_recv_frame(&t, &pt, pl, sizeof(pl)));
+    TEST_ASSERT_EQUAL_INT(4 + 3 + DOIP_VIN_LENGTH, tls_recv_frame(&t, &pt, pl, sizeof(pl)));
+    TEST_ASSERT_LESS_THAN_INT_MESSAGE(500, (int)(now_ms() - t0), "TLS client was stalled by a silent connection");
+    tls_close(&t, true);
+    close(silent);
+}
+
+void test_silent_client_dropped_after_handshake_timeout(void)
+{
+    int silent = fx_connect();
+    TEST_ASSERT_GREATER_THAN_INT(-1, silent);
+    fx_set_timeout(silent, (DOIP_TLS_HANDSHAKE_TIMEOUT_S + 1) * 1000);
+    long t0 = now_ms();
+    uint8_t b;
+    ssize_t n = recv(silent, &b, 1, 0);
+    long dt = now_ms() - t0;
+    TEST_ASSERT_TRUE_MESSAGE(n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK),
+                             "server must close a connection that never handshakes");
+    TEST_ASSERT_GREATER_OR_EQUAL_INT(DOIP_TLS_HANDSHAKE_TIMEOUT_S * 1000 - 100, (int)dt);
+    close(silent);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
     RUN_TEST(test_uds_over_tls);
     RUN_TEST(test_plaintext_client_is_rejected);
+    RUN_TEST(test_silent_client_does_not_stall_server);
+    RUN_TEST(test_silent_client_dropped_after_handshake_timeout);
     RUN_TEST(test_peer_close_is_detected);
     RUN_TEST(test_pipelined_frames_in_one_tls_record);
     RUN_TEST(test_server_survives_disconnect_during_responses);
