@@ -181,9 +181,12 @@ class CommandLineTest(SimTestCase):
         self.assertEqual(nack.exception.code, 0x03)
 
     def test_invalid_arguments_are_rejected(self):
-        for args in (["--vin", "SHORT"], ["--port", "70000"], ["--address", "zero"], ["--no-such-flag"]):
+        for args in (["--vin", "SHORT"], ["--port", "70000"], ["--address", "zero"], ["--no-such-flag"], ["--log-level", "5"]):
             result = subprocess.run([BINARY, *args], capture_output=True, timeout=5)
             self.assertNotEqual(result.returncode, 0, args)
+        # --log-level 0 (ERROR only) is valid: the server starts and keeps running
+        with self.assertRaises(subprocess.TimeoutExpired):
+            subprocess.run([BINARY, "--log-level", "0", "--port", "24499"], capture_output=True, timeout=1)
         self.assertEqual(subprocess.run([BINARY, "--help"], capture_output=True, timeout=5).returncode, 0)
 
 

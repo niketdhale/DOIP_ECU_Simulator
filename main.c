@@ -53,7 +53,7 @@ static void usage(const char *prog) {
            "  --did <DID>=<value>   Extra data identifier for 0x22, e.g. F187=PN-1234 or\n"
            "                        F1A0=0x0102AB (hex bytes). Repeatable.\n"
            "  --did-rw <DID>=<value>  The same, and writable with 0x2E\n"
-           "  --log-level <1-4>     1=WARN 2=INFO 3=DEBUG 4=VERBOSE (default 3)\n"
+           "  --log-level <0-4>     0=ERROR 1=WARN 2=INFO 3=DEBUG 4=VERBOSE (default 3)\n"
            "  --log-file <path>     Also write the log to a file\n"
            "Fault injection:\n"
            "  --response-delay <ms> Delay UDS responses (sends 7F xx 78 while waiting)\n"
@@ -95,14 +95,18 @@ static bool add_did(DoIP_Handle_t *handle, const char *arg, bool writable) {
 }
 
 /* Parse an unsigned number (decimal or 0x hex) in [1, max]; exits on bad input. */
-static unsigned long parse_num(const char *opt, const char *s, unsigned long max) {
+static unsigned long parse_num_min(const char *opt, const char *s, unsigned long min, unsigned long max) {
     char *end;
     unsigned long v = strtoul(s, &end, 0);
-    if (*s == '\0' || *end != '\0' || v == 0 || v > max) {
-        fprintf(stderr, "Invalid value for --%s: '%s' (expected 1..%lu)\n", opt, s, max);
+    if (*s == '\0' || *end != '\0' || v < min || v > max) {
+        fprintf(stderr, "Invalid value for --%s: '%s' (expected %lu..%lu)\n", opt, s, min, max);
         exit(EXIT_FAILURE);
     }
     return v;
+}
+
+static unsigned long parse_num(const char *opt, const char *s, unsigned long max) {
+    return parse_num_min(opt, s, 1, max);
 }
 
 int main(int argc, char *argv[]) {
@@ -177,7 +181,7 @@ int main(int argc, char *argv[]) {
             case 'a': config.logical_address = (uint16_t)parse_num("address", optarg, 0xFFFF); break;
             case 'F': config.functional_address = (uint16_t)parse_num("functional-address", optarg, 0xFFFF); break;
             case 'p': config.port            = (uint16_t)parse_num("port", optarg, 65535);     break;
-            case 'l': config.log_level       = (uint8_t)parse_num("log-level", optarg, 4);     break;
+            case 'l': config.log_level       = (uint8_t)parse_num_min("log-level", optarg, 0, 4);     break;
             case 'f': config.log_file_path   = optarg; break;
             case 'D':
             case 'W':

@@ -410,7 +410,7 @@ for (;;) { DoIP_Tick(engine); DoIP_Tick(gearbox); }   // or one thread per insta
 ```c
 typedef struct {
     /* ── Logging ───────────────────────────────────────────────── */
-    uint8_t     log_level;           // 0=ERROR … 4=VERBOSE
+    uint8_t     log_level;           // 0=ERROR … 4=VERBOSE (taken as given; NULL config = INFO)
     const char *log_file_path;       // NULL = console only
 
     /* ── Timing ────────────────────────────────────────────────── */

@@ -95,7 +95,7 @@ int DoIP_Init(DoIP_Handle_t *handle, const DoIP_Config_t *config) {
     if (handle->is_initialized) { ret = -5; goto unlock; }
 
     if (config) {
-        if (config->log_level > 0) handle->config.log_level = config->log_level;
+        handle->config.log_level = config->log_level;
         if (config->log_file_path) handle->config.log_file_path = config->log_file_path;
         if (config->s3_server_timeout_ms > 0) handle->config.s3_server_timeout_ms = config->s3_server_timeout_ms;
         if (config->on_state_change) handle->config.on_state_change = config->on_state_change;

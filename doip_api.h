@@ -40,7 +40,7 @@ typedef struct DoIP_Context DoIP_Handle_t;
  */
 typedef struct {
     /* Logging Configuration */
-    uint8_t  log_level;           /**< Log verbosity: 0=ERROR, 1=WARN, 2=INFO, 3=DEBUG, 4=VERBOSE */
+    uint8_t  log_level;           /**< Log verbosity: 0=ERROR, 1=WARN, 2=INFO, 3=DEBUG, 4=VERBOSE (used as given when a config is passed; NULL config = INFO) */
     const char *log_file_path;    /**< Path to log file, or NULL for console-only output */
 
     /* FSM / Timing Configuration */
