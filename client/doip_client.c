@@ -13,6 +13,11 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <stdio.h>
+#include <signal.h>
+#if DOIP_ENABLE_TLS
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+#endif
 
 /* ===== Internal Client State Machine ===== */
 
@@ -34,6 +39,10 @@ struct DoIP_ClientContext {
     char                 server_ip[INET6_ADDRSTRLEN]; /* Wide enough for IPv4 or IPv6 */
     uint16_t             server_port;
     uint8_t              rx_payload[DOIP_MAX_PAYLOAD_SIZE];  /* scratch recv buffer */
+#if DOIP_ENABLE_TLS
+    SSL_CTX             *ssl_ctx;
+    SSL                 *ssl;           /* non-NULL: all frame I/O goes through TLS */
+#endif
 };
 
 /* ===== Static Helpers ===== */
@@ -46,15 +55,56 @@ static int client_set_rx_timeout(int fd, uint32_t timeout_ms) {
     return setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 }
 
+/* Send one DoIP frame on the connection (plain socket or TLS). */
+static ssize_t client_send_frame(DoIP_Client_t *c, uint16_t ptype,
+                                 const void *payload, uint32_t plen) {
+#if DOIP_ENABLE_TLS
+    if (c->ssl) {
+        uint8_t buf[DOIP_HEADER_SIZE + DOIP_MAX_PAYLOAD_SIZE];
+        doip_header_t h = { .protocol_version = DOIP_PROTOCOL_VERSION,
+                            .inverse_version  = DOIP_INVERSE_VERSION,
+                            .payload_type     = ptype,
+                            .payload_length   = plen };
+        if (plen > DOIP_MAX_PAYLOAD_SIZE || (plen && !payload)) return -1;
+        if (doip_serialize_header(&h, buf, sizeof(buf)) < 0) return -1;
+        if (plen) memcpy(buf + DOIP_HEADER_SIZE, payload, plen);
+        int total = (int)(DOIP_HEADER_SIZE + plen);
+        return SSL_write(c->ssl, buf, total) == total ? total : -1;
+    }
+#endif
+    return doip_send_frame(c->tcp_fd, ptype, payload, plen);
+}
+
+/* Like doip_recv_n(): len, 0 = closed, -2 = timeout, -1 = error. */
+static ssize_t client_recv_n(DoIP_Client_t *c, void *buf, size_t len) {
+#if DOIP_ENABLE_TLS
+    if (c->ssl) {
+        size_t total = 0;
+        while (total < len) {
+            int n = SSL_read(c->ssl, (uint8_t *)buf + total, (int)(len - total));
+            if (n > 0) { total += (size_t)n; continue; }
+            int e = SSL_get_error(c->ssl, n);
+            if (e == SSL_ERROR_ZERO_RETURN) return total ? (ssize_t)total : 0;
+            if (e == SSL_ERROR_WANT_READ || e == SSL_ERROR_WANT_WRITE ||
+                (e == SSL_ERROR_SYSCALL && (errno == EAGAIN || errno == EWOULDBLOCK)))
+                return -2;
+            return -1;
+        }
+        return (ssize_t)total;
+    }
+#endif
+    return doip_recv_n(c->tcp_fd, buf, len);
+}
+
 /* Receive one complete DoIP frame: sets socket timeout, reads header, reads payload.
  * Returns DOIP_CLIENT_OK on success, negative error code otherwise. */
-static DoIP_ClientStatus_t client_recv_frame(int fd, uint32_t timeout_ms,
+static DoIP_ClientStatus_t client_recv_frame(DoIP_Client_t *c, uint32_t timeout_ms,
                                               doip_header_t *hdr_out,
                                               uint8_t *payload_buf) {
-    client_set_rx_timeout(fd, timeout_ms);
+    client_set_rx_timeout(c->tcp_fd, timeout_ms);
 
     uint8_t raw[DOIP_HEADER_SIZE];
-    ssize_t n = doip_recv_n(fd, raw, DOIP_HEADER_SIZE);
+    ssize_t n = client_recv_n(c, raw, DOIP_HEADER_SIZE);
     if (n == 0)  return DOIP_CLIENT_ERR_IO;      /* server closed connection */
     if (n == -2) return DOIP_CLIENT_ERR_TIMEOUT;
     if (n < 0)   return DOIP_CLIENT_ERR_IO;
@@ -70,7 +120,7 @@ static DoIP_ClientStatus_t client_recv_frame(int fd, uint32_t timeout_ms,
             LOG_WARN(DOIP_LOG_MODULE_CLIENT, "Payload too large (%u)", hdr_out->payload_length);
             return DOIP_CLIENT_ERR_IO;
         }
-        n = doip_recv_n(fd, payload_buf, hdr_out->payload_length);
+        n = client_recv_n(c, payload_buf, hdr_out->payload_length);
         if (n == -2) return DOIP_CLIENT_ERR_TIMEOUT;
         if (n != (ssize_t)hdr_out->payload_length) return DOIP_CLIENT_ERR_IO;
     }
@@ -261,6 +311,40 @@ DoIP_ClientStatus_t DoIP_Client_Connect(DoIP_Client_t *client,
         return DOIP_CLIENT_ERR_SOCKET;
     }
 
+#if DOIP_ENABLE_TLS
+    if (client->config.tls.enable) {
+        signal(SIGPIPE, SIG_IGN);   /* SSL_write has no MSG_NOSIGNAL */
+        SSL_CTX *ctx = SSL_CTX_new(TLS_client_method());
+        bool ok = ctx && SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION) == 1;
+        if (ok) {
+            SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL);
+            ok = client->config.tls.ca_file
+                     ? SSL_CTX_load_verify_locations(ctx, client->config.tls.ca_file, NULL) == 1
+                     : SSL_CTX_set_default_verify_paths(ctx) == 1;
+        }
+        if (ok && client->config.tls.cert_file)
+            ok = SSL_CTX_use_certificate_chain_file(ctx, client->config.tls.cert_file) == 1 &&
+                 SSL_CTX_use_PrivateKey_file(ctx, client->config.tls.key_file
+                          ? client->config.tls.key_file : client->config.tls.cert_file,
+                          SSL_FILETYPE_PEM) == 1 &&
+                 SSL_CTX_check_private_key(ctx) == 1;
+        SSL *ssl = ok ? SSL_new(ctx) : NULL;
+        if (ssl && (SSL_set_fd(ssl, fd) != 1 || SSL_connect(ssl) != 1)) {
+            SSL_free(ssl);
+            ssl = NULL;
+        }
+        if (!ssl) {
+            LOG_ERROR(DOIP_LOG_MODULE_CLIENT, "TLS setup/handshake with %s:%u failed",
+                      server_ip, server_port);
+            if (ctx) SSL_CTX_free(ctx);
+            close(fd);
+            return DOIP_CLIENT_ERR_SOCKET;
+        }
+        client->ssl_ctx = ctx;
+        client->ssl     = ssl;
+    }
+#endif
+
     client->tcp_fd      = fd;
     client->server_port = server_port;
     strncpy(client->server_ip, server_ip, sizeof(client->server_ip) - 1);
@@ -275,6 +359,10 @@ DoIP_ClientStatus_t DoIP_Client_Connect(DoIP_Client_t *client,
 DoIP_ClientStatus_t DoIP_Client_Disconnect(DoIP_Client_t *client) {
     if (!client) return DOIP_CLIENT_ERR_PARAM;
     if (client->tcp_fd >= 0) {
+#if DOIP_ENABLE_TLS
+        if (client->ssl) { SSL_shutdown(client->ssl); SSL_free(client->ssl); client->ssl = NULL; }
+        if (client->ssl_ctx) { SSL_CTX_free(client->ssl_ctx); client->ssl_ctx = NULL; }
+#endif
         close(client->tcp_fd);
         client->tcp_fd = -1;
         LOG_INFO(DOIP_LOG_MODULE_CLIENT, "Disconnected from %s:%u",
@@ -300,13 +388,13 @@ DoIP_ClientStatus_t DoIP_Client_ActivateRouting(DoIP_Client_t *client,
     req.tester_logical_address = htons(client->tester_la);
     req.activation_type = activation_type;
 
-    if (doip_send_frame(client->tcp_fd, DOIP_PT_ROUTING_ACT_REQ, &req, sizeof(req)) < 0) {
+    if (client_send_frame(client, DOIP_PT_ROUTING_ACT_REQ, &req, sizeof(req)) < 0) {
         LOG_ERROR(DOIP_LOG_MODULE_CLIENT, "Failed to send routing activation request");
         return DOIP_CLIENT_ERR_IO;
     }
 
     doip_header_t rx_hdr;
-    DoIP_ClientStatus_t rc = client_recv_frame(client->tcp_fd,
+    DoIP_ClientStatus_t rc = client_recv_frame(client,
                                                 client->config.routing_timeout_ms,
                                                 &rx_hdr, client->rx_payload);
     if (rc != DOIP_CLIENT_OK) return rc;
@@ -341,6 +429,68 @@ DoIP_ClientStatus_t DoIP_Client_ActivateRouting(DoIP_Client_t *client,
 
 /* ===== Diagnostics ===== */
 
+/* Send one diagnostic message carrying @p data (raw UDS, or one ISO-TP N-PDU). */
+static DoIP_ClientStatus_t client_send_diag_msg(DoIP_Client_t *client, uint16_t target,
+                                                const uint8_t *data, uint16_t len) {
+    uint8_t payload[4U + DOIP_MAX_PAYLOAD_SIZE];
+    payload[0] = (uint8_t)(client->tester_la >> 8);
+    payload[1] = (uint8_t)client->tester_la;
+    payload[2] = (uint8_t)(target >> 8);
+    payload[3] = (uint8_t)target;
+    memcpy(&payload[4], data, len);
+    if (client_send_frame(client, DOIP_PT_DIAGNOSTIC_MSG, payload, 4U + len) < 0) {
+        LOG_ERROR(DOIP_LOG_MODULE_CLIENT, "Failed to send diagnostic message");
+        return DOIP_CLIENT_ERR_IO;
+    }
+    return DOIP_CLIENT_OK;
+}
+
+/* Next diagnostic message, consuming DiagACK and Alive Checks transparently.
+ * On success *data points into client->rx_payload. */
+static DoIP_ClientStatus_t client_next_diag(DoIP_Client_t *client, uint16_t *src,
+                                            const uint8_t **data, uint16_t *len) {
+    enum { MAX_SKIP = 64 };
+    for (int i = 0; i < MAX_SKIP; i++) {
+        doip_header_t rx_hdr;
+        DoIP_ClientStatus_t rc = client_recv_frame(client, client->config.response_timeout_ms,
+                                                   &rx_hdr, client->rx_payload);
+        if (rc != DOIP_CLIENT_OK) return rc;
+
+        switch (rx_hdr.payload_type) {
+            case DOIP_PT_DIAGNOSTIC_ACK:
+                LOG_DEBUG(DOIP_LOG_MODULE_CLIENT, "Received DiagACK — waiting for response");
+                continue;
+
+            case DOIP_PT_ALIVE_CHECK_REQ:
+                client_send_frame(client, DOIP_PT_ALIVE_CHECK_RES, NULL, 0);
+                LOG_DEBUG(DOIP_LOG_MODULE_CLIENT, "Alive Check — responded");
+                continue;
+
+            case DOIP_PT_DIAGNOSTIC_NACK:   /* SA(2) TA(2) code(1) */
+            case DOIP_PT_GENERIC_NACK:      /* code(1) */
+                client->last_nack_code = (rx_hdr.payload_length == 0) ? 0xFF :
+                    client->rx_payload[rx_hdr.payload_length >= 5U ? 4 : 0];
+                LOG_WARN(DOIP_LOG_MODULE_CLIENT, "Request rejected: PT=0x%04X, NACK code=0x%02X",
+                         rx_hdr.payload_type, client->last_nack_code);
+                return DOIP_CLIENT_ERR_NACK;
+
+            case DOIP_PT_DIAGNOSTIC_MSG:
+                if (rx_hdr.payload_length < 4U) return DOIP_CLIENT_ERR_IO;
+                *src  = (uint16_t)((client->rx_payload[0] << 8) | client->rx_payload[1]);
+                *data = &client->rx_payload[4];
+                *len  = (uint16_t)(rx_hdr.payload_length - 4U);
+                return DOIP_CLIENT_OK;
+
+            default:
+                LOG_WARN(DOIP_LOG_MODULE_CLIENT,
+                         "Unexpected frame type 0x%04X during recv", rx_hdr.payload_type);
+                return DOIP_CLIENT_ERR_IO;
+        }
+    }
+    return DOIP_CLIENT_ERR_TIMEOUT;
+}
+
+
 DoIP_ClientStatus_t DoIP_Client_SendDiagnostic(DoIP_Client_t *client,
                                                 uint16_t target_ecu_addr,
                                                 const uint8_t *uds_data, uint16_t uds_len) {
@@ -348,19 +498,8 @@ DoIP_ClientStatus_t DoIP_Client_SendDiagnostic(DoIP_Client_t *client,
     if (client->state != DOIP_CLI_STATE_ACTIVATED)  return DOIP_CLIENT_ERR_NOT_READY;
     if ((uint32_t)uds_len + 4U > DOIP_MAX_PAYLOAD_SIZE) return DOIP_CLIENT_ERR_PARAM;
 
-    /* Payload layout: tester_la(2) | target_la(2) | uds_data */
-    uint8_t payload[4U + DOIP_MAX_PAYLOAD_SIZE];
-    payload[0] = (uint8_t)(client->tester_la >> 8);
-    payload[1] = (uint8_t)client->tester_la;
-    payload[2] = (uint8_t)(target_ecu_addr >> 8);
-    payload[3] = (uint8_t)target_ecu_addr;
-    memcpy(&payload[4], uds_data, uds_len);
-
-    if (doip_send_frame(client->tcp_fd, DOIP_PT_DIAGNOSTIC_MSG,
-                        payload, 4U + uds_len) < 0) {
-        LOG_ERROR(DOIP_LOG_MODULE_CLIENT, "Failed to send diagnostic message");
-        return DOIP_CLIENT_ERR_IO;
-    }
+    DoIP_ClientStatus_t rc = client_send_diag_msg(client, target_ecu_addr, uds_data, uds_len);
+    if (rc != DOIP_CLIENT_OK) return rc;
 
     LOG_DEBUG(DOIP_LOG_MODULE_CLIENT, "Sent UDS request (target=0x%04X, len=%u)",
               target_ecu_addr, uds_len);
@@ -374,58 +513,21 @@ DoIP_ClientStatus_t DoIP_Client_RecvDiagnostic(DoIP_Client_t *client,
     if (!client || !resp_buf || !resp_len_out) return DOIP_CLIENT_ERR_PARAM;
     if (client->state != DOIP_CLI_STATE_ACTIVATED)  return DOIP_CLIENT_ERR_NOT_READY;
 
-    /* Loop: consume DiagACK, Alive Checks and "response pending" (7F xx 78)
-     * transparently, return on the final DiagMsg. Each frame restarts the
-     * response timeout, as P2* does. */
-    for (int i = 0; i < 64; i++) {
-        doip_header_t rx_hdr;
-        DoIP_ClientStatus_t rc = client_recv_frame(client->tcp_fd,
-                                                    client->config.response_timeout_ms,
-                                                    &rx_hdr, client->rx_payload);
-        if (rc != DOIP_CLIENT_OK) return rc;
-
-        switch (rx_hdr.payload_type) {
-            case DOIP_PT_DIAGNOSTIC_ACK:
-                LOG_DEBUG(DOIP_LOG_MODULE_CLIENT, "Received DiagACK — waiting for response");
-                continue;
-
-            case DOIP_PT_ALIVE_CHECK_REQ:
-                doip_send_frame(client->tcp_fd, DOIP_PT_ALIVE_CHECK_RES, NULL, 0);
-                LOG_DEBUG(DOIP_LOG_MODULE_CLIENT, "Alive Check — responded");
-                continue;
-
-            case DOIP_PT_DIAGNOSTIC_NACK:   /* SA(2) TA(2) code(1) */
-            case DOIP_PT_GENERIC_NACK:      /* code(1) */
-                client->last_nack_code = (rx_hdr.payload_length == 0) ? 0xFF :
-                    client->rx_payload[rx_hdr.payload_length >= 5U ? 4 : 0];
-                LOG_WARN(DOIP_LOG_MODULE_CLIENT, "Request rejected: PT=0x%04X, NACK code=0x%02X",
-                         rx_hdr.payload_type, client->last_nack_code);
-                return DOIP_CLIENT_ERR_NACK;
-
-            case DOIP_PT_DIAGNOSTIC_MSG: {
-                if (rx_hdr.payload_length < 4U) return DOIP_CLIENT_ERR_IO;
-                uint16_t uds_len = (uint16_t)(rx_hdr.payload_length - 4U);
-                if (uds_len == 3 && client->rx_payload[4] == 0x7F && client->rx_payload[6] == 0x78) {
-                    LOG_DEBUG(DOIP_LOG_MODULE_CLIENT, "Response pending — still waiting");
-                    continue;
-                }
-                if (uds_len > resp_buf_size) return DOIP_CLIENT_ERR_IO;
-                if (src_addr_out)
-                    *src_addr_out = (uint16_t)((client->rx_payload[0] << 8) | client->rx_payload[1]);
-                memcpy(resp_buf, &client->rx_payload[4], uds_len);
-                *resp_len_out = uds_len;
-                LOG_DEBUG(DOIP_LOG_MODULE_CLIENT, "Received UDS response (len=%u)", uds_len);
-                return DOIP_CLIENT_OK;
-            }
-
-            default:
-                LOG_WARN(DOIP_LOG_MODULE_CLIENT,
-                         "Unexpected frame type 0x%04X during recv", rx_hdr.payload_type);
-                return DOIP_CLIENT_ERR_IO;
-        }
+    uint16_t src, uds_len;
+    const uint8_t *d;
+again:;
+    DoIP_ClientStatus_t rc = client_next_diag(client, &src, &d, &uds_len);
+    if (rc != DOIP_CLIENT_OK) return rc;
+    if (uds_len == 3 && d[0] == 0x7F && d[2] == 0x78) {
+        LOG_DEBUG(DOIP_LOG_MODULE_CLIENT, "Response pending — still waiting");
+        goto again;
     }
-
-    return DOIP_CLIENT_ERR_TIMEOUT;
+    if (uds_len > resp_buf_size) return DOIP_CLIENT_ERR_IO;
+    if (src_addr_out) *src_addr_out = src;
+    memcpy(resp_buf, d, uds_len);
+    *resp_len_out = uds_len;
+    LOG_DEBUG(DOIP_LOG_MODULE_CLIENT, "Received UDS response (len=%u)", uds_len);
+    return DOIP_CLIENT_OK;
 }
 
 DoIP_ClientStatus_t DoIP_Client_Transact(DoIP_Client_t *client,
