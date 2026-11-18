@@ -418,9 +418,10 @@ typedef struct {
 
     /* ── State / message callbacks ─────────────────────────────── */
     void (*on_state_change)(uint8_t old, uint8_t new, void *ctx);
-                          // FSM follows the UDS session: -> DIAG_SESSION on a
-                          // non-default session, -> ROUTING_ACTIVE back in the
-                          // default session, -> IDLE when S3 expires
+                          // FSM: IDLE -> ROUTING_ACTIVE on routing activation,
+                          // -> DIAG_SESSION on a non-default UDS session, back to
+                          // ROUTING_ACTIVE in the default session, -> IDLE when
+                          // S3 expires or the last activated tester disconnects
     void (*on_rx_message)(uint16_t pt, const uint8_t *data,
                           uint32_t len, void *ctx);
                           // every DoIP frame received over TCP or UDP

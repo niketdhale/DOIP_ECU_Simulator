@@ -13,6 +13,7 @@
 
 #include "transport/doip_tcp.h"
 #include "core/doip_context.h"
+#include "state/doip_fsm.h"
 #include "transport/doip_io.h"
 #include "core/doip_frame.h"
 #include "core/doip_log.h"
@@ -160,6 +161,11 @@ static void close_client(DoIP_Handle_t *h, doip_client_t *client) {
 
     client->io.close(client->io.ctx);
     memset(client, 0, sizeof(doip_client_t));
+
+    /* Last activated tester gone: the FSM falls back to IDLE */
+    for (int i = 0; i < DOIP_MAX_TCP_CLIENTS; i++)
+        if (h->clients[i].in_use && h->clients[i].state == DOIP_TCP_STATE_ACTIVATED) return;
+    DoIP_Fsm_OnTcpDisconnect(h);
 }
 
 /* ---------------------------------------------------------------------------
@@ -251,6 +257,7 @@ next_frame:
             client->tester_logical_addr = tester_addr;
             LOG_INFO(DOIP_LOG_MODULE_TCP,
                      "Routing Activated for client fd=%d", client->fd);
+            DoIP_Fsm_OnRoutingActivation(h, true);
             break;
         }
 

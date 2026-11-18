@@ -1109,7 +1109,9 @@ void test_state_change_and_rx_message_callbacks(void)
     TEST_ASSERT_NOT_NULL(c);
     TEST_ASSERT_EQUAL_INT(1, atomic_load(&s_rx_calls));
     TEST_ASSERT_EQUAL_HEX16(DOIP_PT_ROUTING_ACT_REQ, atomic_load(&s_rx_last_pt));
-    TEST_ASSERT_EQUAL_INT(0, atomic_load(&s_state_calls));
+    TEST_ASSERT_EQUAL_INT(1, atomic_load(&s_state_calls));        /* activation moves the FSM */
+    TEST_ASSERT_EQUAL_HEX8(0x01, atomic_load(&s_state_old));      /* DOIP_STATE_IDLE           */
+    TEST_ASSERT_EQUAL_HEX8(0x03, atomic_load(&s_state_new));      /* DOIP_STATE_ROUTING_ACTIVE */
 
     uint8_t resp[32];
     uint16_t rlen = 0;
@@ -1117,18 +1119,24 @@ void test_state_change_and_rx_message_callbacks(void)
     const uint8_t to_default[] = { UDS_SID_SESSION_CONTROL, UDS_SESSION_DEFAULT };
     TEST_ASSERT_EQUAL_INT(DOIP_CLIENT_OK, DoIP_Client_Transact(
         c, DOIP_ECU_LOGICAL_ADDRESS, extended, sizeof(extended), resp, sizeof(resp), &rlen));
-    TEST_ASSERT_EQUAL_INT(1, atomic_load(&s_state_calls));
-    TEST_ASSERT_EQUAL_HEX8(0x01, atomic_load(&s_state_old));      /* DOIP_STATE_IDLE         */
+    TEST_ASSERT_EQUAL_INT(2, atomic_load(&s_state_calls));
+    TEST_ASSERT_EQUAL_HEX8(0x03, atomic_load(&s_state_old));      /* DOIP_STATE_ROUTING_ACTIVE */
     TEST_ASSERT_EQUAL_HEX8(0x04, atomic_load(&s_state_new));      /* DOIP_STATE_DIAG_SESSION */
 
     TEST_ASSERT_EQUAL_INT(DOIP_CLIENT_OK, DoIP_Client_Transact(
         c, DOIP_ECU_LOGICAL_ADDRESS, to_default, sizeof(to_default), resp, sizeof(resp), &rlen));
-    TEST_ASSERT_EQUAL_INT(2, atomic_load(&s_state_calls));
+    TEST_ASSERT_EQUAL_INT(3, atomic_load(&s_state_calls));
     TEST_ASSERT_EQUAL_HEX8(0x04, atomic_load(&s_state_old));
     TEST_ASSERT_EQUAL_HEX8(0x03, atomic_load(&s_state_new));      /* DOIP_STATE_ROUTING_ACTIVE */
     TEST_ASSERT_EQUAL_INT(3, atomic_load(&s_rx_calls));
     TEST_ASSERT_EQUAL_HEX16(DOIP_PT_DIAGNOSTIC_MSG, atomic_load(&s_rx_last_pt));
     client_destroy(c);
+
+    /* Last tester disconnects: FSM returns to IDLE */
+    usleep(200000);
+    TEST_ASSERT_EQUAL_INT(4, atomic_load(&s_state_calls));
+    TEST_ASSERT_EQUAL_HEX8(0x03, atomic_load(&s_state_old));
+    TEST_ASSERT_EQUAL_HEX8(0x01, atomic_load(&s_state_new));      /* DOIP_STATE_IDLE */
 
     /* UDP frames are reported as well */
     uint8_t udp_resp[DOIP_HEADER_SIZE + 16];
@@ -1141,7 +1149,7 @@ void test_state_change_and_rx_message_callbacks(void)
     usleep(3 * DOIP_ANNOUNCE_INTERVAL_MS * 1000);
     TEST_ASSERT_EQUAL_INT(0, atomic_load(&s_rx_announcements));
     TEST_ASSERT_EQUAL_INT(4, atomic_load(&s_rx_calls));
-    TEST_ASSERT_EQUAL_INT_MESSAGE(6, atomic_load(&s_ctx_matches), "every call carried user_context");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(8, atomic_load(&s_ctx_matches), "every call carried user_context");
 }
 
 #if !DOIP_ENABLE_IPV6   /* the IPv6 build announces to ff02::1 instead */

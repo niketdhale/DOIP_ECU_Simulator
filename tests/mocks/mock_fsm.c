@@ -23,3 +23,11 @@ void DoIP_Fsm_OnDiagnosticActivity(DoIP_Handle_t *h) {
     (void)h;
     g_mock_diag_activity_calls++;
 }
+
+void DoIP_Fsm_OnRoutingActivation(DoIP_Handle_t *h, bool activated) {
+    (void)h; (void)activated;
+}
+
+void DoIP_Fsm_OnTcpDisconnect(DoIP_Handle_t *h) {
+    (void)h;
+}
