@@ -9,6 +9,8 @@
  *
  * Run: ./test-isotp-server
  */
+#include <time.h>
+#include <stdbool.h>
 #include "unity.h"
 #include "fixture.h"
 #include "transport/doip_isotp.h"
@@ -52,11 +54,22 @@ void tearDown(void)
     fx_stop();
 }
 
-/** Receive N-PDUs until a complete UDS message is reassembled. Returns its length, or -1. */
-static int recv_uds(uint8_t *out, uint16_t out_size)
+static void send_fc(uint8_t fs, uint8_t bs, uint8_t stmin)
+{
+    const uint8_t fc[3] = { (uint8_t)(0x30 | fs), bs, stmin };
+    fx_send_diag(s_fd, DOIP_ECU_LOGICAL_ADDRESS, fc, sizeof(fc));
+}
+
+/**
+ * Receive N-PDUs until a complete UDS message is reassembled, acting as the
+ * tester: FC (CTS, @p bs, @p stmin) after the First Frame and after every
+ * @p bs Consecutive Frames. Returns the message length, or -1.
+ */
+static int recv_uds_fc(uint8_t *out, uint16_t out_size, uint8_t bs, uint8_t stmin)
 {
     static doip_isotp_ctx_t rx;        /* tester-side reassembly state */
     uint8_t npdu[64];
+    int cfs = 0;
     doip_isotp_reset(&rx);
     for (;;) {
         int n = fx_recv_diag(s_fd, npdu, sizeof(npdu), NULL);
@@ -64,7 +77,35 @@ static int recv_uds(uint8_t *out, uint16_t out_size)
         TEST_ASSERT_EQUAL_INT_MESSAGE(8, n, "every N-PDU from the ECU is padded to 8 bytes");
         int len = doip_isotp_rx(&rx, npdu, (uint16_t)n, out, out_size, NULL, NULL);
         if (len != 0) return len;
+        if ((npdu[0] & 0xF0) == 0x10 || (bs && ++cfs % bs == 0)) send_fc(ISOTP_FC_CTS, bs, stmin);
     }
+}
+
+static int recv_uds(uint8_t *out, uint16_t out_size) { return recv_uds_fc(out, out_size, 0, 0); }
+
+/** True if nothing arrives within @p ms. */
+static bool silent_for(int ms)
+{
+    uint8_t npdu[16];
+    fx_set_timeout(s_fd, ms);
+    bool silent = fx_recv_diag(s_fd, npdu, sizeof(npdu), NULL) < 0;
+    fx_set_timeout(s_fd, 2000);
+    return silent;
+}
+
+static void send_read_vin(void)
+{
+    const uint8_t sf[] = { 0x03, UDS_SID_READ_DATA_BY_ID, 0xF1, 0x90 };
+    fx_send_diag(s_fd, DOIP_ECU_LOGICAL_ADDRESS, sf, sizeof(sf));
+}
+
+static void expect_tester_present_works(void)
+{
+    const uint8_t sf[] = { 0x02, UDS_SID_TESTER_PRESENT, 0x00 };
+    uint8_t uds[16];
+    fx_send_diag(s_fd, DOIP_ECU_LOGICAL_ADDRESS, sf, sizeof(sf));
+    TEST_ASSERT_EQUAL_INT(2, recv_uds(uds, sizeof(uds)));
+    TEST_ASSERT_EQUAL_HEX8(0x7E, uds[0]);
 }
 
 /* ── Single frame in, single frame out ─────────────────────────────── */
@@ -94,12 +135,101 @@ void test_long_response_is_segmented(void)
     TEST_ASSERT_EQUAL_INT(8, fx_recv_diag(s_fd, npdu, sizeof(npdu), NULL));
     const uint8_t ff[8] = { 0x10, 0x14, 0x62, 0xF1, 0x90, 'I', 'S', 'O' };
     TEST_ASSERT_EQUAL_HEX8_ARRAY(ff, npdu, 8);
+    TEST_ASSERT_MESSAGE(silent_for(200), "no CF before the tester's Flow Control");
+    send_fc(ISOTP_FC_CTS, 0, 0);
     TEST_ASSERT_EQUAL_INT(8, fx_recv_diag(s_fd, npdu, sizeof(npdu), NULL));
     const uint8_t cf1[8] = { 0x21, 'T', 'P', 'V', 'I', 'N', '1', '2' };
     TEST_ASSERT_EQUAL_HEX8_ARRAY(cf1, npdu, 8);
     TEST_ASSERT_EQUAL_INT(8, fx_recv_diag(s_fd, npdu, sizeof(npdu), NULL));
     const uint8_t cf2[8] = { 0x22, '3', '4', '5', '6', '7', '8', '9' };
     TEST_ASSERT_EQUAL_HEX8_ARRAY(cf2, npdu, 8);
+}
+
+/* ── Flow Control handling on the ECU's transmit side ──────────────── */
+
+void test_block_size_needs_fc_per_block(void)
+{
+    uint8_t npdu[16];
+    send_read_vin();
+    TEST_ASSERT_EQUAL_INT(8, fx_recv_diag(s_fd, npdu, sizeof(npdu), NULL));   /* FF  */
+    send_fc(ISOTP_FC_CTS, 1, 0);
+    TEST_ASSERT_EQUAL_INT(8, fx_recv_diag(s_fd, npdu, sizeof(npdu), NULL));   /* CF1 */
+    TEST_ASSERT_EQUAL_HEX8(0x21, npdu[0]);
+    TEST_ASSERT_MESSAGE(silent_for(200), "BS=1: CF2 must wait for another FC");
+    send_fc(ISOTP_FC_CTS, 1, 0);
+    TEST_ASSERT_EQUAL_INT(8, fx_recv_diag(s_fd, npdu, sizeof(npdu), NULL));   /* CF2 */
+    TEST_ASSERT_EQUAL_HEX8(0x22, npdu[0]);
+    TEST_ASSERT_MESSAGE(silent_for(200), "no more CFs after the last one");
+}
+
+void test_stmin_spaces_consecutive_frames(void)
+{
+    uint8_t npdu[16];
+    struct timespec t1, t2;
+    send_read_vin();
+    TEST_ASSERT_EQUAL_INT(8, fx_recv_diag(s_fd, npdu, sizeof(npdu), NULL));
+    send_fc(ISOTP_FC_CTS, 0, 20);
+    TEST_ASSERT_EQUAL_INT(8, fx_recv_diag(s_fd, npdu, sizeof(npdu), NULL));
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    TEST_ASSERT_EQUAL_INT(8, fx_recv_diag(s_fd, npdu, sizeof(npdu), NULL));
+    clock_gettime(CLOCK_MONOTONIC, &t2);
+    long ms = (t2.tv_sec - t1.tv_sec) * 1000L + (t2.tv_nsec - t1.tv_nsec) / 1000000L;
+    TEST_ASSERT_GREATER_OR_EQUAL_INT_MESSAGE(18, ms, "CFs at least STmin apart");
+    TEST_ASSERT_LESS_THAN_INT(200, ms);
+}
+
+void test_flow_control_wait_then_cts(void)
+{
+    uint8_t npdu[16];
+    send_read_vin();
+    TEST_ASSERT_EQUAL_INT(8, fx_recv_diag(s_fd, npdu, sizeof(npdu), NULL));
+    send_fc(ISOTP_FC_WAIT, 0, 0);
+    TEST_ASSERT_MESSAGE(silent_for(300), "FC Wait: no CF");
+    send_fc(ISOTP_FC_WAIT, 0, 0);
+    send_fc(ISOTP_FC_CTS, 0, 0);
+    TEST_ASSERT_EQUAL_INT(8, fx_recv_diag(s_fd, npdu, sizeof(npdu), NULL));
+    TEST_ASSERT_EQUAL_HEX8(0x21, npdu[0]);
+    TEST_ASSERT_EQUAL_INT(8, fx_recv_diag(s_fd, npdu, sizeof(npdu), NULL));
+    TEST_ASSERT_EQUAL_HEX8(0x22, npdu[0]);
+}
+
+void test_flow_control_overflow_aborts_response(void)
+{
+    uint8_t npdu[16];
+    send_read_vin();
+    TEST_ASSERT_EQUAL_INT(8, fx_recv_diag(s_fd, npdu, sizeof(npdu), NULL));
+    send_fc(ISOTP_FC_OVFL, 0, 0);
+    TEST_ASSERT_MESSAGE(silent_for(300), "FC Overflow: no CFs");
+    expect_tester_present_works();                       /* connection still usable, not busy */
+}
+
+void test_missing_flow_control_times_out(void)
+{
+    uint8_t npdu[16];
+    send_read_vin();
+    TEST_ASSERT_EQUAL_INT(8, fx_recv_diag(s_fd, npdu, sizeof(npdu), NULL));
+    TEST_ASSERT_MESSAGE(silent_for(300), "no FC: no CFs");
+
+    /* meanwhile the response is still in flight: a new request is answered busy */
+    const uint8_t sf[] = { 0x02, UDS_SID_TESTER_PRESENT, 0x00 };
+    fx_send_diag(s_fd, DOIP_ECU_LOGICAL_ADDRESS, sf, sizeof(sf));
+    TEST_ASSERT_EQUAL_INT(8, fx_recv_diag(s_fd, npdu, sizeof(npdu), NULL));
+    const uint8_t busy[4] = { 0x03, 0x7F, UDS_SID_TESTER_PRESENT, 0x21 };
+    TEST_ASSERT_EQUAL_HEX8_ARRAY(busy, npdu, 4);
+
+    usleep((DOIP_ISOTP_N_BS_MS + 200) * 1000U);          /* N_Bs expires */
+    TEST_ASSERT_MESSAGE(silent_for(50), "still no CFs after N_Bs");
+    expect_tester_present_works();
+}
+
+/* ── Block size and STmin with the reassembling helper ─────────────── */
+
+void test_long_response_with_bs2_and_stmin(void)
+{
+    uint8_t uds[64];
+    send_read_vin();
+    TEST_ASSERT_EQUAL_INT(20, recv_uds_fc(uds, sizeof(uds), 2, 1));
+    TEST_ASSERT_EQUAL_MEMORY("\x62\xF1\x90" TEST_VIN, uds, 20);
 }
 
 /* ── Request longer than 7 bytes: FF -> Flow Control -> CF ──────────── */
@@ -163,6 +293,12 @@ int main(void)
     UNITY_BEGIN();
     RUN_TEST(test_single_frame_request_and_response);
     RUN_TEST(test_long_response_is_segmented);
+    RUN_TEST(test_block_size_needs_fc_per_block);
+    RUN_TEST(test_stmin_spaces_consecutive_frames);
+    RUN_TEST(test_flow_control_wait_then_cts);
+    RUN_TEST(test_flow_control_overflow_aborts_response);
+    RUN_TEST(test_missing_flow_control_times_out);
+    RUN_TEST(test_long_response_with_bs2_and_stmin);
     RUN_TEST(test_segmented_request_gets_flow_control_and_answer);
     RUN_TEST(test_response_pending_is_framed);
     RUN_TEST(test_unexpected_consecutive_frame_closes_connection);

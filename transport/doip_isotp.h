@@ -54,13 +54,17 @@ typedef struct {
     uint32_t rx_fc_sent_ms;               /**< Timestamp when FC was sent (N_Cr timer) */
 
     /* --- TX segmentation ------------------------------------------------ */
-    const uint8_t *tx_data;              /**< Pointer to UDS response data   */
+    uint8_t  tx_buf[DOIP_ISOTP_MAX_PDU]; /**< Copy of the UDS response being sent */
     uint16_t tx_total;                    /**< Total bytes to send            */
     uint16_t tx_sent;                     /**< Bytes sent so far              */
     uint8_t  tx_sn;                       /**< Next CF sequence number (0-F)  */
+    uint8_t  tx_active;                   /**< Segmented TX in progress       */
+    uint8_t  tx_wait_fc;                  /**< Waiting for a Flow Control     */
+    uint8_t  tx_bs_left;                  /**< CFs left in block (0 = no limit) */
     uint8_t  tx_bs;                       /**< Block size from last FC        */
-    uint8_t  tx_stmin;                    /**< STmin byte from last FC        */
-    uint32_t tx_last_ms;                  /**< Timestamp of last CF sent      */
+    uint8_t  tx_stmin_ms;                 /**< Separation between CFs, ms     */
+    uint32_t tx_next_ms;                  /**< Earliest time of next CF       */
+    uint32_t tx_deadline_ms;              /**< N_Bs deadline while waiting for FC */
 } doip_isotp_ctx_t;
 
 /* ---------------------------------------------------------------------------
